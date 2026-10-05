@@ -267,6 +267,16 @@ describe('browse', () => {
     expect(b.actions.filter(a => a.action === 'left_click').length).toBe(1)
   })
 
+  test('a wait step does not trip the stale-page guard', ACTIVE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    browser(on)
+    on('http.fetch', ollama({ pick: 'Clear', gate: 0.97 }).hook)
+    await start($, on)
+    const r = await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['wait', 'click "Clear"'] } as never))
+    expect(textOf(r)).toContain('All steps done')
+  })
+
   test('types real keystrokes into a search box', ACTIVE, async ($, on) => {
     mock.store(on)
     const clock = mock.clock(on)

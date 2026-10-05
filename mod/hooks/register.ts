@@ -250,7 +250,13 @@ async function bridgeTool($: $, tool: string, args: Record<string, unknown>): Pr
     throw new Fallback('tool-error', `bridge: ${(run.stderr || run.stdout).slice(0, 300)}`)
   }
   if (out.socket) via!.socket = out.socket
-  if (out.error !== undefined || !out.result) throw new Fallback('tool-error', `bridge ${tool}: ${JSON.stringify(out.error).slice(0, 300)}`)
+  // Keep the end of the error: a batch error ends with "actions[N] (tool) failed", which tells a
+  // failed read after the actions (harmless) from a failed action. The start was cut once, and a
+  // read that failed during a Wikipedia navigation stopped the run.
+  if (out.error !== undefined || !out.result) {
+    const why = typeof out.error === 'string' ? out.error : JSON.stringify(out.error)
+    throw new Fallback('tool-error', `bridge ${tool}: ${why.length > 400 ? `…${why.slice(-400)}` : why}`)
+  }
   return textOf(out.result)
 }
 
@@ -594,7 +600,7 @@ export const register: Register = (on, options) => {
     // Steps that do not change the page (fill, tick, select) are grounded on the page as it is
     // and queued; a click, Enter, scroll or wait closes the batch. Each batch costs ~2.5 s
     // whatever it holds, so signup's five steps now take one batch instead of five.
-    let queue: { step: number; items: Item[]; did: string; safety: Safety; changes: boolean }[] = []
+    let queue: { step: number; items: Item[]; did: string; safety: Safety; navigates: boolean }[] = []
     const failAt = async (i: number, detail: string) => {
       log.push(`✗ ${all[i]}: not done (${detail}).`)
       const rest = all.slice(i + 1)
@@ -624,7 +630,7 @@ export const register: Register = (on, options) => {
         return { step: first, detail: 'this action needs a review, so it was not run over the bridge' }
       }
       const before = page?.key
-      const expectsChange = queue.some(q => q.changes)
+      const expectsChange = queue.some(q => q.navigates)
       const r = await guarded($, cfg, async () => {
         // No settle wait by default (settle_ms): the extension already waits after a batch of input
         // actions, and a page that is still changing is caught by groundSettled's retry.
@@ -721,7 +727,10 @@ export const register: Register = (on, options) => {
           items = [{ name: 'form_input', input: { tabId: tab, ref: el.ref, value, action_summary: `Sets "${el.label.split(' → ')[0]}" to "${value}"` } }]
         }
       }
-      queue.push({ step: i, items, did, safety, changes })
+      // Only a click or Enter should change the page; a wait or scroll closes a batch but may
+      // leave the page as it was (a "wait" step once tripped the stale-page guard on GOV.UK).
+      const navigates = changes && step.kind !== 'wait' && step.kind !== 'scroll_down' && step.kind !== 'scroll_up'
+      queue.push({ step: i, items, did, safety, navigates })
       if (changes || lastStep) {
         // The page as it was before the last action: expect waits until it is not.
         if (lastStep && changes && typeof input.expect === 'string') beforeLast = await pageNow($, tab)

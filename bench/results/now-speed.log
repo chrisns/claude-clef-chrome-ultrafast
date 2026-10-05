@@ -1,0 +1,10 @@
+warmed clef-flash and nomic-embed-text in 10417 ms
+PASS hotels    wall 16.8s browse 8.7s steps-total=7793ms/1 bridge:browser_batch=4536ms/3 ollama:systemone=2450ms/3 bridge:tabs_context_mcp=1602ms/3 bridge:sort=802ms/3 expect=796ms/1 recor
+PASS hotels    wall 14.4s browse 6.3s steps-total=5252ms/1 bridge:browser_batch=3935ms/3 ollama:systemone=2022ms/3 expect=923ms/1 bridge:sort=696ms/3 bridge:tabs_context_mcp=261ms/3 record
+PASS hotels    wall 16.5s browse 5.8s steps-total=5065ms/1 bridge:browser_batch=3639ms/3 ollama:systemone=1933ms/3 bridge:sort=818ms/3 expect=705ms/1 bridge:tabs_context_mcp=227ms/3 record
+PASS wikipedia wall 16.9s browse 8.2s steps-total=6559ms/1 bridge:browser_batch=4633ms/2 ollama:systemone=3323ms/3 expect=1564ms/1 bridge:sort=1211ms/2 bridge:tabs_context_mcp=220ms/3 reco
+PASS wikipedia wall 30.1s browse 9.9s steps-total=8576ms/1 ollama:systemone=5076ms/3 bridge:browser_batch=3938ms/2 bridge:sort=2522ms/2 expect=1227ms/1 bridge:tabs_context_mcp=800ms/3 reco
+PASS wikipedia wall 16.3s browse 6.9s steps-total=5444ms/1 bridge:browser_batch=3407ms/2 ollama:systemone=3180ms/3 bridge:sort=1391ms/2 expect=1317ms/1 bridge:tabs_context_mcp=245ms/3 reco
+PASS govuk     wall 19.4s browse 9.6s steps-total=7675ms/1 bridge:browser_batch=4968ms/3 ollama:systemone=4333ms/4 expect=1808ms/1 bridge:sort=685ms/3 bridge:tabs_context_mcp=231ms/3 recor
+PASS govuk     wall 14.8s browse 8.1s steps-total=6945ms/1 bridge:browser_batch=4086ms/3 ollama:systemone=3786ms/4 expect=1110ms/1 bridge:sort=785ms/3 bridge:tabs_context_mcp=210ms/3 recor
+PASS govuk     wall 14.8s browse 7.9s steps-total=6848ms/1 bridge:browser_batch=4178ms/3 ollama:systemone=3462ms/4 expect=981ms/1 bridge:sort=699ms/3 bridge:tabs_context_mcp=232ms/3 record

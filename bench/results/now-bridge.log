@@ -1,0 +1,16 @@
+warmed clef-flash and nomic-embed-text in 2829 ms
+PASS hotels      17.9s (api 3.7s)  turns  2  in 116266 out 203  $0.483  mcp__clef-chrome__browse×1
+PASS hotels      23.6s (api 4.7s)  turns  2  in 116266 out 304  $0.034  mcp__clef-chrome__browse×1
+PASS hotels      13.1s (api 3.5s)  turns  2  in 116268 out 204  $0.032  mcp__clef-chrome__browse×1
+PASS signup      29.6s (api 3.9s)  turns  3  in 174695 out 309  $0.057  mcp__clef-chrome__browse×1 tabs_close_mcp×1
+PASS signup      26.4s (api 4.5s)  turns  3  in 174522 out 298  $0.499  mcp__clef-chrome__browse×1 tabs_close_mcp×1
+PASS signup      20.8s (api 4.0s)  turns  3  in 174707 out 310  $0.046  mcp__clef-chrome__browse×1 tabs_close_mcp×1
+PASS docs        53.9s (api 19.3s)  turns  9  in 534688 out 1277  $0.168  mcp__clef-chrome__browse×1 tabs_context_mcp×1 browser_batch×3 computer×1 javascript_tool×2
+PASS docs        51.8s (api 19.6s)  turns  8  in 473366 out 1146  $0.139  mcp__clef-chrome__browse×1 tabs_context_mcp×1 browser_batch×3 javascript_tool×1 get_page_text×1
+PASS docs        55.0s (api 25.3s)  turns 10  in 596906 out 1267  $0.176  mcp__clef-chrome__browse×1 tabs_context_mcp×1 browser_batch×3 get_page_text×1 read_page×1 computer×1 javascript_tool×1
+PASS wikipedia   43.4s (api 13.4s)  turns  7  in 320465 out 930  $0.571  mcp__clef-chrome__browse×1 tabs_context_mcp×1 navigate×1 find×1 computer×1 browser_batch×1
+PASS wikipedia  130.0s (api 18.6s)  turns  8  in 477311 out 1315  $0.167  mcp__clef-chrome__browse×1 tabs_context_mcp×2 browser_batch×4
+PASS wikipedia   13.6s (api 3.2s)  turns  2  in 116166 out 182  $0.031  mcp__clef-chrome__browse×1
+PASS govuk       15.8s (api 3.2s)  turns  2  in 116157 out 179  $0.041  mcp__clef-chrome__browse×1
+PASS govuk       14.9s (api 3.1s)  turns  2  in 116161 out 181  $0.031  mcp__clef-chrome__browse×1
+PASS govuk       64.0s (api 19.1s)  turns  8  in 476224 out 1399  $0.156  mcp__clef-chrome__browse×1 tabs_context_mcp×1 browser_batch×4 computer×1
