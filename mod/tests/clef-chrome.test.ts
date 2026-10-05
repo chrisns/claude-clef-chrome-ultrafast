@@ -1,6 +1,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import { groups } from '../hooks/ground.ts'
 import { parse } from '../hooks/tree.ts'
+import { fastAllowed } from '../hooks/register.ts'
 
 // read_page (filter "all") of bench/fixtures/signup.html, as claude-in-chrome returned it.
 const SIGNUP = `main [ref_34]
@@ -293,59 +294,91 @@ test('browse hands back on input it cannot read', ACTIVE, async ($, on) => {
   expect(b.actions.length).toBe(0)
 })
 
-describe('browse, fast_routine', () => {
-  const FAST = { options: { mode: 'active', fast_routine: true } }
-  // The browser answers through $.mcp.call too, and tabs_context_mcp reports the page URL.
-  function fastWorld(on: any, decision: 'allow' | 'ask') {
-    const viaMcp: string[][] = []
+describe('browse over the local bridge', () => {
+  const BRIDGE = { options: { mode: 'active', bridge: true } }
+  // call.py, faked: answers each tool as the extension would and records what went over it.
+  function bridgeWorld(on: any, decision: 'allow' | 'ask' | 'deny') {
+    const viaBridge: string[] = []
     on('tool.check', () => ({ decision }))
-    on('mcp.call', (_$: unknown, e: { server: string; tool: string; args: { actions: { name: string; input: Record<string, unknown> }[] } }) => {
-      viaMcp.push(e.args.actions.map(a => `${a.name}${a.input.action ? `:${String(a.input.action)}` : ''}`))
-      const content = e.args.actions.map(a => ({ type: 'text', text: `[${a.name}${a.input.action ? `:${String(a.input.action)}` : ''}] ${a.name === 'read_page' ? SIGNUP : 'ok'}` }))
-      return { value: { content, isError: false } }
+    on('process.run', (_$: unknown, e: { argv: string[]; init?: { stdin?: string } }) => {
+      const req = JSON.parse(e.init?.stdin ?? '{}') as { tool: string; args: Record<string, unknown> }
+      const one = (tool: string, args: Record<string, unknown>) => {
+        viaBridge.push(`${tool}${args.action ? `:${String(args.action)}` : ''}`)
+        if (tool === 'read_page') return SIGNUP
+        if (tool === 'tabs_context_mcp') return JSON.stringify({ availableTabs: [{ tabId: 9, title: 'Acme Docs', url: 'http://127.0.0.1:8791/docs.html' }] })
+        if (tool === 'tabs_create_mcp') return 'Created new tab. Tab ID: 9'
+        return 'ok'
+      }
+      const text =
+        req.tool === 'browser_batch'
+          ? (req.args.actions as { name: string; input: Record<string, unknown> }[])
+              .map(x => `[${x.name}${x.input.action ? `:${String(x.input.action)}` : ''}] ${one(x.name, x.input)}`)
+              .join('\n')
+          : one(req.tool, req.args)
+      return { value: { exitCode: 0, stdout: JSON.stringify({ socket: '/tmp/x.sock', result: { content: [{ type: 'text', text }] } }), stderr: '' } }
     })
-    on('tool.call', { tool: 'mcp__claude-in-chrome__tabs_context_mcp' }, () => ({
-      result: { content: [{ type: 'text', text: JSON.stringify({ availableTabs: [{ tabId: TAB, title: 'Acme Docs', url: 'http://127.0.0.1:8791/docs.html' }] }) }], isError: false },
-    }))
-    return viaMcp
+    return viaBridge
+  }
+  const go = ($: any, steps: string[]) => $.tool.call({ tool: 'mcp__clef-chrome__browse', url: 'http://127.0.0.1:8791/docs.html', steps } as never)
+
+  test('a routine browse runs over the bridge, not Claude Code\'s tools', BRIDGE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    const b = browser(on)
+    const viaBridge = bridgeWorld(on, 'allow')
+    on('http.fetch', ollama({ pick: 'Clear', gate: 0.97 }).hook)
+    await start($, on)
+    const r = await drive(clock, go($, ['click "Clear"']))
+    expect(textOf(r)).toContain('Ran over the local Comet bridge')
+    expect(viaBridge).toContain('navigate')
+    expect(viaBridge).toContain('computer:left_click')
+    expect(b.batches()).toBe(0)
+  })
+
+  test('a step with a risk word keeps the whole browse on the normal tools', BRIDGE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    const b = browser(on)
+    const viaBridge = bridgeWorld(on, 'allow')
+    on('http.fetch', ollama({ pick: 'Subscribe', gate: 0.97 }).hook)
+    await start($, on)
+    const r = await drive(clock, go($, ['click "Subscribe"']))
+    expect(textOf(r)).not.toContain('over the local')
+    expect(viaBridge.length).toBe(0)
+    void b
+  })
+
+  test('fails closed: only allow, or ask where nobody would be asked', async () => {
+    expect(fastAllowed('allow', 'default')).toBe(true)
+    expect(fastAllowed('deny', 'bypassPermissions')).toBe(false)
+    for (const mode of ['auto', 'bypassPermissions']) expect(fastAllowed('ask', mode)).toBe(true)
+    for (const mode of ['default', 'acceptEdits', 'plan', 'dontAsk', undefined]) expect(fastAllowed('ask', mode)).toBe(false)
+  })
+
+  for (const [mode, bridged] of [['auto', true], ['default', false]] as const) {
+    test(`with no rule, mode ${mode} ${bridged ? 'uses' : 'does not use'} the bridge`, BRIDGE, async ($, on) => {
+      mock.store(on)
+      const clock = mock.clock(on)
+      browser(on)
+      const viaBridge = bridgeWorld(on, 'ask')
+      on('http.fetch', ollama({ pick: 'Clear', gate: 0.97 }).hook)
+      on('classic.UserPromptSubmit', () => ({}))
+      await start($, on)
+      await $.classic.UserPromptSubmit({ prompt: 'clear the form', permission_mode: mode } as never)
+      await drive(clock, go($, ['click "Clear"']))
+      expect(viaBridge.length > 0).toBe(bridged)
+    })
   }
 
-  test('routine steps skip the per-action review when the rules allow it', FAST, async ($, on) => {
+  test('a deny rule keeps the browse off the bridge', BRIDGE, async ($, on) => {
     mock.store(on)
     const clock = mock.clock(on)
-    const b = browser(on)
-    const viaMcp = fastWorld(on, 'allow')
-    on('http.fetch', ollama({ pick: 'Clear', gate: 0.95 }).hook)
+    browser(on)
+    const viaBridge = bridgeWorld(on, 'deny')
+    on('http.fetch', ollama({ pick: 'Clear', gate: 0.97 }).hook)
     await start($, on)
-    const r = await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['click "Clear"'] } as never))
-    expect(textOf(r)).toContain('Fast path (routine actions, no per-action review): 1 of 1 batches.')
-    expect(viaMcp.at(-1)).toContain('computer:left_click')
-    expect(b.batches()).toBe(1) // only the first page read went the normal way
-  })
-
-  test('a step with a risk word takes the normal path', FAST, async ($, on) => {
-    mock.store(on)
-    const clock = mock.clock(on)
-    const b = browser(on)
-    const viaMcp = fastWorld(on, 'allow')
-    on('http.fetch', ollama({ pick: 'Subscribe', gate: 0.95 }).hook)
-    await start($, on)
-    const r = await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['click "Subscribe"'] } as never))
-    expect(textOf(r)).toContain('0 of 1 batches')
-    expect(viaMcp.length).toBe(0)
-    expect(b.batches()).toBe(2)
-  })
-
-  test('without an allow from the rules, every batch takes the normal path', FAST, async ($, on) => {
-    mock.store(on)
-    const clock = mock.clock(on)
-    const b = browser(on)
-    const viaMcp = fastWorld(on, 'ask')
-    on('http.fetch', ollama({ pick: 'Clear', gate: 0.95 }).hook)
-    await start($, on)
-    await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['click "Clear"'] } as never))
-    expect(viaMcp.length).toBe(0)
-    expect(b.batches()).toBe(2)
+    await drive(clock, go($, ['click "Clear"']))
+    expect(viaBridge.length).toBe(0)
   })
 })
 

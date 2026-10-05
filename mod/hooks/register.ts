@@ -10,7 +10,7 @@ import type { ClefChromeMetrics } from '../types'
 import { DEFAULT_TUNING, ground, parseStep, type Tuning } from './ground.ts'
 import { ask, type Client, embed, Fallback, type Reason } from './systemone.ts'
 import { type Element, findText, parse } from './tree.ts'
-import { type Action, isRoutine } from './safety.ts'
+import { type Action, areRoutine, wordsSayRisky } from './safety.ts'
 
 const PLUGIN = 'clef-chrome'
 const CHROME = 'mcp__claude-in-chrome__'
@@ -34,7 +34,7 @@ const EMPTY: ClefChromeMetrics = { local: 0, fallback: {}, shadow: { agree: 0, d
 
 type $ = Parameters<Parameters<Parameters<Register>[0]>[2]>[0]
 
-type Cfg = { mode: 'off' | 'shadow' | 'active'; tuning: Tuning; timeoutMs: number; url: string; model: string; embedModel: string; settleMs: number; fastRoutine: boolean; routineAt: number }
+type Cfg = { mode: 'off' | 'shadow' | 'active'; tuning: Tuning; timeoutMs: number; url: string; model: string; embedModel: string; settleMs: number; bridge: boolean; bridgeBrowser: string; routineAt: number }
 
 // Kept per module load: a hot reload closes the breaker, which is fine.
 let fails = 0
@@ -132,6 +132,7 @@ async function guarded<T>($: $, cfg: Cfg, work: () => Promise<T>): Promise<Guard
 
 // A browser tool called from inside a hook. Any error or deny is a Fallback.
 async function chrome($: $, tool: string, args: Record<string, unknown>): Promise<string> {
+  if (via) return bridgeTool($, tool, args)
   const t = Date.now()
   const r = await $.tool.call({ tool: `${CHROME}${tool}`, ...args } as never)
   tick(`chrome:${tool}${args.action ? `:${String(args.action)}` : ''}${args.filter ? `:${String(args.filter)}` : ''}`, t)
@@ -198,8 +199,8 @@ type Item = { name: string; input: Record<string, unknown> }
 // Several claude-in-chrome actions in one browser_batch call. On its own, an input action
 // (click, type, key, form_input) took 2 to 9 s inside the mod; in a batch the same click took
 // 130 ms (bench/results/summary.md, speed). Returns each item's text, in order.
-async function batch($: $, items: Item[], fast = false): Promise<string[]> {
-  const text = (fast && (await fastBatch($, items))) || (await chrome($, 'browser_batch', { actions: items }))
+async function batch($: $, items: Item[]): Promise<string[]> {
+  const text = await chrome($, 'browser_batch', { actions: items })
   const starts: [number, number][] = []
   let from = 0
   for (const item of items) {
@@ -214,34 +215,64 @@ async function batch($: $, items: Item[], fast = false): Promise<string[]> {
   })
 }
 
-// fast_routine (off by default): a batch of routine actions goes straight to the extension with
-// $.mcp.call, so Claude Code's per-action site check and auto-mode classifier (~2.5 s a call,
-// bench/results/summary.md) are skipped. Three guards: every action in the batch passed
-// isRoutine (risk words, then clef-flash at routine_at; 0 of 29 risky actions passed in
-// bench/safety.ts), $.tool.check says your rules and mode allow this exact call, and the call
-// itself works. Claude's own browse call, which lists the URL and every step, is still reviewed.
-// Resolves undefined for the normal path.
-let fastBroken = false
-async function fastBatch($: $, items: Item[]): Promise<string | undefined> {
-  if (fastBroken) return undefined
+// The local bridge (option "bridge", off by default). The browser's native host for the Claude
+// in Chrome extension listens on /tmp/claude-mcp-browser-bridge-$USER/<pid>.sock; mod/bridge/
+// call.py sends one framed call to it and prints the reply (~50-300 ms). A call there is not
+// one of Claude Code's tool calls, so it gets no per-action review (~2 s each): the extension's
+// own site permissions, blocklists and tab-group limit still apply, and the mod's own sort is
+// the review. The bridge's tab group is the mod's own, in the chosen browser (Comet by default),
+// with your sign-ins; Claude's tools cannot reach its tabs.
+let via: { browser: string; socket?: string } | undefined
+
+async function bridgeTool($: $, tool: string, args: Record<string, unknown>): Promise<string> {
+  const t = Date.now()
+  const request = JSON.stringify({ tool, args, browser: via!.browser, ...(via!.socket ? { socket: via!.socket } : {}), timeout: 20 })
+  const run = await $.process.run(['python3', `${$.plugin.root}/bridge/call.py`], { stdin: request, timeoutMs: 25_000 })
+  tick(`bridge:${tool}${args.action ? `:${String(args.action)}` : ''}${args.filter ? `:${String(args.filter)}` : ''}`, t)
+  let out: { socket?: string; result?: { content?: { type: string; text?: string }[] }; error?: unknown }
+  try {
+    out = JSON.parse(run.stdout)
+  } catch {
+    throw new Fallback('tool-error', `bridge: ${(run.stderr || run.stdout).slice(0, 300)}`)
+  }
+  if (out.socket) via!.socket = out.socket
+  if (out.error !== undefined || !out.result) throw new Fallback('tool-error', `bridge ${tool}: ${JSON.stringify(out.error).slice(0, 300)}`)
+  return textOf(out.result)
+}
+
+// The session's permission mode, from the classic hooks (a tool.call input does not carry it).
+// It can change during a session (Shift+Tab), so it is read again at each prompt.
+let permissionMode: string | undefined
+
+// Fail closed. A rule that denies: never. A rule that allows: yes. No rule ("ask"): only where
+// no person would be asked anyway, auto (the classifier would decide; clef-flash's routine
+// verdict decides instead) and bypassPermissions. In default, acceptEdits, plan or dontAsk
+// mode, or an unknown one, "ask" means a prompt to the person or a refusal: the built-in path.
+export function fastAllowed(decision: string, mode: string | undefined): boolean {
+  if (decision === 'allow') return true
+  if (decision !== 'ask') return false
+  return mode === 'auto' || mode === 'bypassPermissions'
+}
+
+// Before a browse goes over the bridge: your rules and mode allow opening the page, and no risk
+// word is in the URL or a step. No model call yet: each batch's grounded elements get the model
+// check before the batch runs (allRoutine), which is the more informative one.
+async function bridgeable($: $, cfg: Cfg, url: string, steps: string[]): Promise<boolean> {
+  if (!cfg.bridge) return false
   const t = Date.now()
   try {
-    const check = await $.tool.check({ tool: `${CHROME}browser_batch`, input: { actions: items } } as never)
-    const { decision } = check
-    if (decision !== 'allow') {
-      $.ui.log(`${PLUGIN}: fast path not allowed: ${JSON.stringify(check).slice(0, 300)}`, { to: 'debug' })
-      tick('fast:not-allowed', t)
-      return undefined
+    const { decision } = await $.tool.check({ tool: `${CHROME}navigate`, input: { url } } as never)
+    if (!fastAllowed(decision, permissionMode)) {
+      $.ui.log(`${PLUGIN}: bridge not used (rules ${decision}, mode ${permissionMode})`, { to: 'debug' })
+      return false
     }
-    const r = await $.mcp.call('claude-in-chrome', 'browser_batch', { actions: items })
-    tick('fast:browser_batch', t)
-    if (r.isError) throw new Fallback('tool-error', `browser_batch: ${r.content.map(b => b.text ?? '').join(' ').slice(0, 300)}`)
-    return r.content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
-  } catch (err) {
-    if (err instanceof Fallback) throw err
-    fastBroken = true
-    $.ui.log(`${PLUGIN}: fast path off for this session: ${err}`, { to: 'debug' })
-    return undefined
+    const risky = [{ step: 'open the page', element: 'the page (link)' }, ...steps.map(step => ({ step, element: step }))].find(a => wordsSayRisky({ ...a, url }))
+    if (risky) $.ui.log(`${PLUGIN}: bridge not used: risk word in "${risky.step}" or ${url}`, { to: 'debug' })
+    return !risky
+  } catch {
+    return false
+  } finally {
+    tick('bridge:sort', t)
   }
 }
 
@@ -249,20 +280,16 @@ async function fastBatch($: $, items: Item[]): Promise<string | undefined> {
 // with the tab's current URL.
 type Safety = Omit<Action, 'url'> | 'safe'
 async function allRoutine($: $, cfg: Cfg, tabId: number, actions: Safety[]): Promise<boolean> {
-  if (!cfg.fastRoutine) return false
   const t = Date.now()
   try {
     const url = /\((\S+)\)$/.exec(await pageNow($, tabId))?.[1] ?? ''
     if (!url) return false
-    for (const a of actions) {
-      if (a === 'safe') continue
-      const v = await isRoutine(makeClient($, cfg), { ...a, url }, cfg.routineAt)
-      $.ui.log(`${PLUGIN}: SORT ${v.routine ? 'routine' : 'review'} p=${v.p.toFixed(2)} ${v.reason} "${a.step}" -> ${a.element} @ ${url}`, { to: 'debug' })
-      if (!v.routine) return false
-    }
-    return true
+    const checked = actions.filter((a): a is Omit<Action, 'url'> => a !== 'safe').map(a => ({ ...a, url }))
+    const verdicts = await areRoutine(makeClient($, cfg), checked, cfg.routineAt)
+    verdicts.forEach((v, n) => $.ui.log(`${PLUGIN}: SORT ${v.routine ? 'routine' : 'review'} p=${v.p.toFixed(2)} ${v.reason} "${checked[n]!.step}" -> ${checked[n]!.element} @ ${url}`, { to: 'debug' }))
+    return verdicts.every(v => v.routine)
   } finally {
-    tick('fast:sort', t)
+    tick('bridge:sort', t)
   }
 }
 
@@ -385,10 +412,22 @@ export const register: Register = (on, options) => {
     model: String(options.model ?? 'clef-flash'),
     embedModel: String(options.embed_model ?? 'nomic-embed-text'),
     settleMs: Number(options.settle_ms ?? 0),
-    fastRoutine: options.fast_routine === true,
-    routineAt: Number(options.routine_at ?? 0.8),
+    bridge: options.bridge === true,
+    bridgeBrowser: String(options.bridge_browser ?? 'Comet'),
+    // 0.65: in batches, risky actions scored 0.54 at most and routine ones 0.68 at least (bar one
+    // at 0.37), bench/safety.ts on 49 actions: a small margin on a small set.
+    routineAt: Number(options.routine_at ?? 0.65),
   }
   const feature = (k: string) => mode !== 'off' && options[k] !== false
+
+  on('classic.SessionStart', ($, e, next) => {
+    permissionMode = (e as { permission_mode?: string }).permission_mode ?? permissionMode
+    return next(e)
+  })
+  on('classic.UserPromptSubmit', ($, e, next) => {
+    permissionMode = (e as { permission_mode?: string }).permission_mode ?? permissionMode
+    return next(e)
+  })
 
   on('session.start', async ($, e, next) => {
     const out = await next(e)
@@ -474,8 +513,11 @@ export const register: Register = (on, options) => {
     timing = {}
     let tabId = input.tabId as number | undefined
     let page: Page | undefined
-    let batches = 0
-    let fastBatches = 0
+    // Over the local bridge only when the whole browse reads as routine and the mode allows it;
+    // a tabId from Claude's own group can only be reached with Claude's tools.
+    const bridged = typeof input.url === 'string' && tabId === undefined && (await bridgeable($, cfg, input.url, steps as string[]))
+    via = bridged ? { browser: cfg.bridgeBrowser } : undefined
+    try {
     if (typeof input.url === 'string') {
       const url = input.url
       const r = await guarded($, cfg, async () => {
@@ -495,17 +537,13 @@ export const register: Register = (on, options) => {
           tabId = id
         }
         const id = tabId
-        const open = cfg.fastRoutine ? await isRoutine(makeClient($, cfg), { url, step: 'open the page', element: 'the page (link)' }, cfg.routineAt) : undefined
-        if (open) $.ui.log(`${PLUGIN}: SORT ${open.routine ? 'routine' : 'review'} p=${open.p.toFixed(2)} ${open.reason} "open the page" @ ${url}`, { to: 'debug' })
-        const openFast = open?.routine === true
-        if (openFast) fastBatches++
-        const [, interactive = '', all = ''] = await batch($, [{ name: 'navigate', input: { url, tabId: id } }, ...readItems(id)], openFast)
+        const [, interactive = '', all = ''] = await batch($, [{ name: 'navigate', input: { url, tabId: id } }, ...readItems(id)])
         page = pageOf(interactive, all)
         return id
       })
       if (!r.ok) return { result: `✗ open ${url}: not done (${r.detail}). Use the normal claude-in-chrome tools.` }
       tabId = r.value
-      log.push(`✓ opened ${url} in tab ${tabId}`)
+      log.push(`✓ opened ${url} in tab ${tabId}${bridged ? ` (${cfg.bridgeBrowser}, over the local bridge)` : ''}`)
     }
     const tab = tabId!
     const all = steps as string[]
@@ -518,9 +556,14 @@ export const register: Register = (on, options) => {
       log.push(`✗ ${all[i]}: not done (${detail}).`)
       const rest = all.slice(i + 1)
       if (rest.length) log.push(`Not run: ${rest.map(x => JSON.stringify(x)).join(', ')}.`)
-      log.push(`Continue with the normal claude-in-chrome tools from this step (tab ${tab}).`)
-      logTiming($, i + 1, startedAt)
       const now = await pageNow($, tab)
+      if (bridged) {
+        log.push(`Tab ${tab} is in clef-chrome's own tab group in ${cfg.bridgeBrowser}; your tools cannot reach it.`)
+        log.push('Continue with the normal claude-in-chrome tools: open the page below in your own tab and do this step and the rest there.')
+      } else {
+        log.push(`Continue with the normal claude-in-chrome tools from this step (tab ${tab}).`)
+      }
+      logTiming($, i + 1, startedAt)
       if (now) log.push(now)
       return { result: log.join('\n') }
     }
@@ -530,14 +573,18 @@ export const register: Register = (on, options) => {
       if (!queue.length) return undefined
       const items = queue.flatMap(q => q.items)
       const owner = queue.flatMap(q => q.items.map(() => q.step))
-      const fast = await allRoutine($, cfg, tab, queue.map(q => q.safety))
-      batches++
-      if (fast) fastBatches++
+      if (bridged && !(await allRoutine($, cfg, tab, queue.map(q => q.safety)))) {
+        // Fail closed: nothing in this batch runs. Claude does it, reviewed, in its own tab.
+        const first = queue[0]!.step
+        queue = []
+        page = undefined
+        return { step: first, detail: 'this action needs a review, so it was not run over the bridge' }
+      }
       const r = await guarded($, cfg, async () => {
         // No settle wait by default (settle_ms): the extension already waits after a batch of input
         // actions, and a page that is still changing is caught by groundSettled's retry.
         const settle: Item[] = cfg.settleMs > 0 ? [{ name: 'computer', input: { tabId: tab, action: 'wait', duration: cfg.settleMs / 1000 } }] : []
-        const out = await batch($, [...items, ...settle, ...(last ? [] : readItems(tab))], fast)
+        const out = await batch($, [...items, ...settle, ...(last ? [] : readItems(tab))])
         page = last ? undefined : pageOf(out[out.length - 2] ?? '', out[out.length - 1] ?? '')
       })
       const n = r.ok ? undefined : /actions\[(\d+)\]/.exec(r.detail)?.[1]
@@ -622,7 +669,7 @@ export const register: Register = (on, options) => {
       }
     }
     log.push(`All steps done in tab ${tab}.`)
-    if (cfg.fastRoutine) log.push(`Fast path (routine actions, no per-action review): ${fastBatches} of ${batches + (typeof input.url === 'string' ? 1 : 0)} batches.`)
+    if (bridged) log.push(`Ran over the local ${cfg.bridgeBrowser} bridge: no per-action review; the extension's site rules applied. Tab ${tab} is in clef-chrome's own tab group.`)
     tick('steps-total', startedAt)
     const expectAt = Date.now()
     if (typeof input.expect === 'string') {
@@ -640,6 +687,10 @@ export const register: Register = (on, options) => {
     if (now) log.push(now)
     logTiming($, (steps as string[]).length, startedAt)
     return { result: log.join('\n') }
+    } finally {
+      // The bridge serves this browse only; check, find and the next browse decide again.
+      via = undefined
+    }
   })
 
   // check(question): a yes/no about the page text. Never a low-confidence yes or no.

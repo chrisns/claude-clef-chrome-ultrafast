@@ -40,6 +40,8 @@ const runs = Number(arg('--runs', '3'))
 const only = arg('--jobs', '').split(',').filter(Boolean)
 const modDir = arg('--mod-dir', new URL('../mod', import.meta.url).pathname)
 const options: Record<string, unknown> = { mode: 'active' }
+// --allow <rule>: a permission allow rule for the headless session only (repeatable)
+const allow = process.argv.flatMap((a, i) => (a === '--allow' ? [process.argv[i + 1]!] : []))
 process.argv.forEach((a, i) => {
   if (a !== '--set') return
   const [k, v] = process.argv[i + 1]!.split('=')
@@ -58,7 +60,7 @@ for (const [name, job] of Object.entries(JOBS).filter(([n]) => !only.length || o
       'claude',
       ['-p', prompt, '--chrome', '--model', 'sonnet', '--output-format', 'json', '--tools', 'TodoWrite', '--setting-sources', '',
         '--disable-slash-commands', '--no-session-persistence', '--permission-mode', 'bypassPermissions',
-        '--plugin-dir', modDir, '--settings', JSON.stringify({ pluginConfigs: { 'clef-chrome': { options } } }),
+        '--plugin-dir', modDir, '--settings', JSON.stringify({ pluginConfigs: { 'clef-chrome': { options } }, ...(allow.length ? { permissions: { allow } } : {}) }),
         '--debug-file', debug],
       { encoding: 'utf8', cwd: '/tmp', timeout: 300_000 },
     )
