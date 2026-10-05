@@ -1,0 +1,15 @@
+PASS hotels      42.9s (api 20.5s)  turns  8  in 473705 out 1388  $0.602  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4 javascript_tool×1
+PASS hotels      38.2s (api 17.5s)  turns  8  in 470322 out 1230  $0.152  tabs_create_mcp×1 tabs_context_mcp×1 browser_batch×3 computer×1 javascript_tool×1
+PASS hotels      35.4s (api 15.4s)  turns  7  in 412403 out 1096  $0.136  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4
+PASS signup      42.6s (api 19.3s)  turns  7  in 353199 out 926  $0.125  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×3 tabs_close_mcp×1
+PASS signup      27.2s (api 10.8s)  turns  7  in 353236 out 888  $0.114  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×3 tabs_close_mcp×1
+PASS signup      26.9s (api 11.0s)  turns  7  in 353366 out 913  $0.114  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×3 tabs_close_mcp×1
+PASS docs        39.1s (api 17.0s)  turns  8  in 466431 out 944  $0.144  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×3 javascript_tool×1 get_page_text×1
+PASS docs        63.2s (api 28.7s)  turns 12  in 715045 out 1732  $0.224  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4 get_page_text×1 read_page×1 computer×2 javascript_tool×1
+PASS docs        64.5s (api 41.3s)  turns 11  in 651064 out 1396  $0.196  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×3 get_page_text×1 read_page×1 computer×1 javascript_tool×2
+PASS wikipedia   37.3s (api 15.5s)  turns  7  in 409506 out 991  $0.141  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4
+PASS wikipedia   45.4s (api 17.7s)  turns  7  in 410038 out 1155  $0.136  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4
+PASS wikipedia   43.8s (api 16.9s)  turns  7  in 409521 out 1035  $0.132  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4
+PASS govuk       57.2s (api 19.6s)  turns  9  in 533770 out 1145  $0.181  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4 get_page_text×1 find×1
+PASS govuk       45.9s (api 20.5s)  turns  9  in 533778 out 1185  $0.171  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4 get_page_text×1 find×1
+PASS govuk       48.4s (api 20.2s)  turns 10  in 534040 out 1228  $0.173  tabs_context_mcp×2 tabs_create_mcp×1 browser_batch×4 find×1 computer×1
