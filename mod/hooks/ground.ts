@@ -20,7 +20,7 @@ export type StepKind = Kind | 'any' | 'enter' | 'scroll_down' | 'scroll_up' | 'w
 export type Step = { text: string; kind: StepKind; value?: string }
 
 export type Strategy = 'gate1' | 'none+gate1'
-export type Tuning = { gate: number; minMargin: number; strategy: Strategy; skipGateAt?: number }
+export type Tuning = { gate: number; minMargin: number; strategy: Strategy; skipGateAt?: number; prefilter?: number }
 export const DEFAULT_TUNING: Tuning = { gate: 0.5, minMargin: 0.15, strategy: 'none+gate1' }
 const NONE = '__none__'
 
@@ -142,12 +142,13 @@ export async function ground(client: Client, step: Step, elements: Element[], tu
 
   // A large page (Wikipedia has 300+ links) would need many tournament groups at ~42 ms per
   // option. One embedding call ranks the whole pool; the decision model sees the top few.
-  if (!namedStep && pool.length > PREFILTER) {
+  const keep = tuning.prefilter ?? PREFILTER
+  if (!namedStep && pool.length > keep) {
     const vectors = await embed(client, step.text, pool.map(label))
     if (vectors) {
       const [q, ...docs] = vectors
       const scored = pool.map((e, i) => [e, cosine(q!, docs[i]!)] as const).sort((a, b) => b[1] - a[1])
-      pool = scored.slice(0, PREFILTER).map(([e]) => e)
+      pool = scored.slice(0, keep).map(([e]) => e)
     }
   }
   const byId = new Map(pool.map(e => [e.id, e]))

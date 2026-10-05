@@ -20,12 +20,13 @@ const BREAKER_FAILS = 3
 const BREAKER_MS = 5 * 60_000
 // The title, URL and start of the text decide a check; 12k characters of Wikipedia made each
 // check take 4 to 8 s.
-const PAGE_TEXT_CHARS = 2_000
+const PAGE_TEXT_CHARS = 800 // as accurate as 2,000 on bench/check.ts (14/2/2), p50 0.53 s against 0.91 s
 // A click or Enter can start a page load or a re-render that read_page would miss.
 const SEARCHY = (e: Element) => e.role === 'combobox' || e.role === 'searchbox' || e.inputType === 'search'
 const TOGGLES = new Set(['checkbox', 'radio', 'switch', 'menuitemcheckbox', 'menuitemradio'])
 const OFF = /\b(untick|uncheck|turn off|switch off|clear|deselect|disable|remove)\b/i
 const RETRY_MS = [800, 1600]
+const MAX_TABS = 3 // tabs the mod keeps in its own bridge group
 // expect polls the tab's title and URL until the last click or Enter has changed the page,
 // then checks once; a "no" gets one quick second look.
 const EXPECT_POLL_MS = 250
@@ -153,12 +154,13 @@ function textOf(result: unknown): string {
 }
 
 // A yes/no about the page text. Never a low-confidence yes or no.
-async function checkPage($: $, cfg: Cfg, tabId: number, question: string, screenshot = false): Promise<string> {
+async function checkPage($: $, cfg: Cfg, tabId: number, question: string, screenshot = false, pageText?: string): Promise<string> {
   const r = await guarded($, cfg, async () => {
     // Title and URL as their own fields, and the question asked about the open page itself: on
     // a GOV.UK results page "is this the passport guide?" scored 0.94 from plain text, because
     // the guide is the first result (bench/check.ts, mode "page").
-    const raw = await chrome($, 'get_page_text', { tabId })
+    // The last batch can carry the page text, which saves a round trip.
+    const raw = pageText ?? (await chrome($, 'get_page_text', { tabId }))
     const [head = '', ...rest] = raw.split('\n---\n')
     const field = (k: string) => new RegExp(`^${k}: (.*)$`, 'm').exec(head)?.[1] ?? ''
     const state = { page_title: field('Title'), page_url: field('URL'), page_text: rest.join('\n---\n').slice(0, PAGE_TEXT_CHARS) }
@@ -561,6 +563,12 @@ export const register: Register = (on, options) => {
           const tabs = (JSON.parse(ctx.slice(ctx.indexOf('{'), ctx.lastIndexOf('}') + 1)) as { availableTabs?: { tabId: number; url: string }[] }).availableTabs ?? []
           const empty = tabs.find(t => t.url === '' || t.url === 'about:blank' || t.url.startsWith('chrome://newtab'))
           let id = empty?.tabId
+          // The bridge's group is the mod's own: keep it to MAX_TABS by reusing the oldest tab
+          // and closing the rest. 33 left-over tabs made Comet's batches 3 to 5 times slower.
+          if (id === undefined && via && tabs.length >= MAX_TABS) {
+            id = tabs[0]!.tabId
+            for (const extra of tabs.slice(MAX_TABS)) await chrome($, 'tabs_close_mcp', { tabId: extra.tabId }).catch(() => undefined)
+          }
           if (id === undefined) {
             const text = await chrome($, 'tabs_create_mcp', {})
             id = Number(/Tab ID: (\d+)/.exec(text)?.[1] ?? /Executed on tabId: (\d+)/.exec(text)?.[1])
@@ -582,6 +590,7 @@ export const register: Register = (on, options) => {
     let lastField: Element | undefined
     let lastFieldStep: string | undefined
     let beforeLast: string | undefined
+    let finalText: string | undefined
     // Steps that do not change the page (fill, tick, select) are grounded on the page as it is
     // and queued; a click, Enter, scroll or wait closes the batch. Each batch costs ~2.5 s
     // whatever it holds, so signup's five steps now take one batch instead of five.
@@ -620,7 +629,9 @@ export const register: Register = (on, options) => {
         // No settle wait by default (settle_ms): the extension already waits after a batch of input
         // actions, and a page that is still changing is caught by groundSettled's retry.
         const settle: Item[] = cfg.settleMs > 0 ? [{ name: 'computer', input: { tabId: tab, action: 'wait', duration: cfg.settleMs / 1000 } }] : []
-        const out = await batch($, [...items, ...settle, ...(last ? [] : readItems(tab))])
+        const tail: Item[] = last ? (typeof input.expect === 'string' ? [{ name: 'get_page_text', input: { tabId: tab } }] : []) : readItems(tab)
+        const out = await batch($, [...items, ...settle, ...tail])
+        if (last && tail.length) finalText = out[out.length - 1]
         page = last ? undefined : pageOf(out[out.length - 2] ?? '', out[out.length - 1] ?? '')
         // A click or Enter that left the page exactly as it was did not land (a lost click, an
         // empty search): grounding the next step on the old page clicked a wrong link once
@@ -723,16 +734,17 @@ export const register: Register = (on, options) => {
     tick('steps-total', startedAt)
     const expectAt = Date.now()
     if (typeof input.expect === 'string') {
-      // A click or Enter can start a navigation that outlasts the batch (Wikipedia search did).
-      // Poll the title and URL (read-only, ~0.1 s each) until they change, at most 2 s, then
-      // check; a fixed 1 s wait and a 1.5 s retry made the Wikipedia check take 6 s.
-      if (beforeLast !== undefined) {
-        const until = Date.now() + EXPECT_POLL_MAX_MS
-        while (Date.now() < until && (await pageNow($, tab)) === beforeLast) await pause($, EXPECT_POLL_MS)
-      }
-      let verdict = await checkPage($, cfg, tab, input.expect)
+      // Check at once, on the page text the last batch read. Only a "no" or "unsure" waits: poll
+      // the title and URL until the last click or Enter has changed the page (a navigation can
+      // outlast the batch: Wikipedia search did), at most 2 s, then look once more.
+      let verdict = await checkPage($, cfg, tab, input.expect, false, finalText)
       if (!verdict.startsWith('yes')) {
-        await pause($, EXPECT_RETRY_MS)
+        if (beforeLast !== undefined) {
+          const until = Date.now() + EXPECT_POLL_MAX_MS
+          while (Date.now() < until && (await pageNow($, tab)) === beforeLast) await pause($, EXPECT_POLL_MS)
+        } else {
+          await pause($, EXPECT_RETRY_MS)
+        }
         verdict = await checkPage($, cfg, tab, input.expect)
       }
       log.push(`Check "${input.expect}": ${verdict}`)

@@ -78,7 +78,8 @@ for (const [name, job] of Object.entries(JOBS).filter(([n]) => !only.length || o
     const timing = /TIMING browse (\d+) steps (\d+)ms(.*)$/m.exec(log)
     const ms = timing ? Number(timing[2]) : NaN
     const ok = job.ok.test(text) && !text.includes('✗')
-    rows.push({ job: name, run: n, ok, ms, wallMs, phases: timing?.[3]?.trim() ?? '' })
+    rows.push({ job: name, run: n, ok, ms, wallMs, phases: timing?.[3]?.trim() ?? '', text: text.slice(0, 800) })
+    if (!ok) console.log(`  why: ${text.replace(/\n/g, ' | ').slice(0, 400)}`)
     console.log(`${ok ? 'PASS' : 'FAIL'} ${name.padEnd(9)} wall ${(wallMs / 1000).toFixed(1)}s browse ${(ms / 1000).toFixed(1)}s ${timing?.[3]?.trim().slice(0, 150) ?? ''}`)
   }
 }

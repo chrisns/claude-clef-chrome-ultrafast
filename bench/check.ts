@@ -34,6 +34,7 @@ const CASES: Case[] = [
 const dir = new URL('./check/', import.meta.url).pathname
 const arg = (k: string, d: string) => (process.argv.includes(k) ? process.argv[process.argv.indexOf(k) + 1]! : d)
 const model = arg('--model', 'clef-flash')
+const chars = Number(arg('--chars', '2000'))
 const modes = arg('--modes', 'text,image,both').split(',') as ('text' | 'image' | 'both' | 'page' | 'pageimg')[]
 const GATE = 0.5 // the mod's default: yes at p >= 0.8, no at p <= 0.2, otherwise unsure
 const verdict = (p: number) => (p >= 1 - (1 - GATE) / 2.5 ? 'yes' : p <= GATE / 2.5 ? 'no' : 'unsure')
@@ -60,7 +61,7 @@ for (const mode of modes) {
       mode === 'image'
         ? 'A screenshot of the browser page is attached.'
         : mode === 'page' || mode === 'pageimg'
-          ? { page_title: head.title, page_url: head.url, page_text: body }
+          ? { page_title: head.title, page_url: head.url, page_text: body.slice(0, chars) }
           : { page_text: text }
     const started = Date.now()
     const a = await ask(

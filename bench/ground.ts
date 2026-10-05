@@ -114,7 +114,7 @@ const pct = (xs: number[], p: number) => {
   return s.length ? s[Math.min(s.length - 1, Math.floor((p / 100) * s.length))] : 0
 }
 
-export async function run(backend: string, strategy: Strategy = DEFAULT_TUNING.strategy, negative = false, skipGateAt?: number): Promise<{ backend: string; rows: Row[]; summary: Record<string, number | string> }> {
+export async function run(backend: string, strategy: Strategy = DEFAULT_TUNING.strategy, negative = false, skipGateAt?: number, prefilter?: number): Promise<{ backend: string; rows: Row[]; summary: Record<string, number | string> }> {
   const rows: Row[] = []
   for (const [snap, text, want] of CASES) {
     const step = parseStep(text)
@@ -131,7 +131,7 @@ export async function run(backend: string, strategy: Strategy = DEFAULT_TUNING.s
       const client = localClient(backend)
       const started = Date.now()
       try {
-        const g = await ground(client, step, all, { ...DEFAULT_TUNING, strategy, ...(skipGateAt !== undefined ? { skipGateAt } : {}) })
+        const g = await ground(client, step, all, { ...DEFAULT_TUNING, strategy, ...(skipGateAt !== undefined ? { skipGateAt } : {}), ...(prefilter !== undefined ? { prefilter } : {}) })
         rows.push({ step: text, want, got: g.element.label, ok: !negative && matches(g.element), ms: Date.now() - started, tokens: 0, cost: 0 })
       } catch (err) {
         if (!(err instanceof Fallback)) throw err
@@ -166,9 +166,10 @@ if (import.meta.main) {
   const strategy = arg('--strategy', DEFAULT_TUNING.strategy) as Strategy
   const negative = process.argv.includes('--negative')
   const skip = process.argv.includes('--skip-gate-at') ? Number(arg('--skip-gate-at', '1')) : undefined
-  const result = await run(backend, strategy, negative, skip)
+  const pre = process.argv.includes('--prefilter') ? Number(arg('--prefilter', '25')) : undefined
+  const result = await run(backend, strategy, negative, skip, pre)
   console.log(JSON.stringify(result.summary))
   mkdirSync(`${dir}results`, { recursive: true })
-  const name = `ground-${backend}${CLAUDE_MODELS[backend] ? '' : `-${strategy}`}${skip !== undefined ? `-skip${skip}` : ''}${negative ? '-neg' : ''}`
+  const name = `ground-${backend}${CLAUDE_MODELS[backend] ? '' : `-${strategy}`}${skip !== undefined ? `-skip${skip}` : ''}${pre !== undefined ? `-pre${pre}` : ''}${negative ? '-neg' : ''}`
   writeFileSync(`${dir}results/${name}.json`, JSON.stringify(result, null, 2))
 }

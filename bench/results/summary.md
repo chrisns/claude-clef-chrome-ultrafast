@@ -229,3 +229,22 @@ All 9 runs passed. The changes:
   - Trade-off: an exact step such as `click "OK"` on an exactly matching element is settled by the word rules only. Claude wrote that step, and Claude Code reviewed the `browse` call that lists it.
 - **`expect`.** It polls the tab's title and URL until the last click or Enter has changed the page (250 ms polls, at most 2 s), and then checks 2,000 characters of text. A second look comes after 0.6 s. It now takes 2.0–3.4 s, down from up to 6.5 s.
 - **Model warm-up.** The benches warm the models first, and every request sends `keep_alive`. During earlier runs, screenpipe's `gemma4:12b-mlx` shared the GPU, and `clef-flash` calls took 1.2–1.5 s each instead of 0.45–0.7 s.
+
+## 9. More aggressive `expect`, and a tab limit (fixed-argument speed bench, warmed, 3 runs per job)
+
+| Job | Wall time | Inside `browse` | `expect` |
+|---|---|---|---|
+| hotels | 14.0–16.4 s | 6.1–7.7 s | 0.6 s |
+| wikipedia | 15.4–23.9 s | 7.0–16.3 s | 1.2–6.4 s |
+| govuk | 14.5–24.0 s | 7.2–15.5 s | 1.0–3.2 s |
+
+All 9 runs passed.
+
+**Changes kept:**
+- **`expect` checks at once.** It uses the page text that the last batch read. The tab poll and the retry run only after a "no".
+- **`check` reads 800 characters, not 2,000.** On `bench/check.ts` it is just as accurate (14 right, 2 wrong, 2 unsure; the 2 wrong are visual-only questions), and faster: p50 0.53 s against 0.91 s.
+- **The bridge keeps at most 3 tabs in its group.** 33 left-over bench tabs had made Comet's batches 3 to 5 times slower.
+
+**Tried and not kept:** gate skip at 0.9, and prefilter to 12 options. Accuracy was the same (35/36 right, 0 wrong picks on 36 negative steps), and the time change was within noise. Each request costs about 0.2–0.3 s before it does any work, each yes/no question about 0.25 s, and each choice option only about 42 ms.
+
+**Outliers:** the slow wikipedia and govuk runs had `clef-flash` calls of about 2.4 s each, against 0.6–1 s in the other runs. That points to other GPU load at the time.
