@@ -13,6 +13,8 @@
     "min_margin": { "title": "Minimum margin", "type": "number", "default": 0.15, "description": "Two candidates closer than this go back to Claude." },
     "timeout_ms": { "title": "Timeout (ms)", "type": "number", "default": 8000, "description": "A local request slower than this goes back to Claude." },
     "settle_ms": { "title": "Settle wait (ms)", "type": "number", "default": 0, "description": "An extra wait after each batch of browser actions, before the page is read." },
+    "fast_routine": { "title": "Fast path for routine actions", "type": "boolean", "default": false, "description": "Send a batch of routine browse actions (navigate, search, filter, open) straight to the extension, skipping Claude Code's per-action review. Risky actions always take the normal path." },
+    "routine_at": { "title": "Routine threshold", "type": "number", "default": 0.8, "description": "clef-flash must score an action at least this routine for the fast path." },
     "browse": { "title": "Offer the browse tool", "type": "boolean", "default": true, "description": "browse(steps): run several plain steps locally in one Claude turn." },
     "find": { "title": "Answer find locally", "type": "boolean", "default": true, "description": "Answer claude-in-chrome find with the local model." },
     "check": { "title": "Offer the check tool", "type": "boolean", "default": true, "description": "check(question): a local yes/no about the page." }

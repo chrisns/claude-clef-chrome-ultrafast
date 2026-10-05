@@ -293,6 +293,62 @@ test('browse hands back on input it cannot read', ACTIVE, async ($, on) => {
   expect(b.actions.length).toBe(0)
 })
 
+describe('browse, fast_routine', () => {
+  const FAST = { options: { mode: 'active', fast_routine: true } }
+  // The browser answers through $.mcp.call too, and tabs_context_mcp reports the page URL.
+  function fastWorld(on: any, decision: 'allow' | 'ask') {
+    const viaMcp: string[][] = []
+    on('tool.check', () => ({ decision }))
+    on('mcp.call', (_$: unknown, e: { server: string; tool: string; args: { actions: { name: string; input: Record<string, unknown> }[] } }) => {
+      viaMcp.push(e.args.actions.map(a => `${a.name}${a.input.action ? `:${String(a.input.action)}` : ''}`))
+      const content = e.args.actions.map(a => ({ type: 'text', text: `[${a.name}${a.input.action ? `:${String(a.input.action)}` : ''}] ${a.name === 'read_page' ? SIGNUP : 'ok'}` }))
+      return { value: { content, isError: false } }
+    })
+    on('tool.call', { tool: 'mcp__claude-in-chrome__tabs_context_mcp' }, () => ({
+      result: { content: [{ type: 'text', text: JSON.stringify({ availableTabs: [{ tabId: TAB, title: 'Acme Docs', url: 'http://127.0.0.1:8791/docs.html' }] }) }], isError: false },
+    }))
+    return viaMcp
+  }
+
+  test('routine steps skip the per-action review when the rules allow it', FAST, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    const b = browser(on)
+    const viaMcp = fastWorld(on, 'allow')
+    on('http.fetch', ollama({ pick: 'Clear', gate: 0.95 }).hook)
+    await start($, on)
+    const r = await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['click "Clear"'] } as never))
+    expect(textOf(r)).toContain('Fast path (routine actions, no per-action review): 1 of 1 batches.')
+    expect(viaMcp.at(-1)).toContain('computer:left_click')
+    expect(b.batches()).toBe(1) // only the first page read went the normal way
+  })
+
+  test('a step with a risk word takes the normal path', FAST, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    const b = browser(on)
+    const viaMcp = fastWorld(on, 'allow')
+    on('http.fetch', ollama({ pick: 'Subscribe', gate: 0.95 }).hook)
+    await start($, on)
+    const r = await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['click "Subscribe"'] } as never))
+    expect(textOf(r)).toContain('0 of 1 batches')
+    expect(viaMcp.length).toBe(0)
+    expect(b.batches()).toBe(2)
+  })
+
+  test('without an allow from the rules, every batch takes the normal path', FAST, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    const b = browser(on)
+    const viaMcp = fastWorld(on, 'ask')
+    on('http.fetch', ollama({ pick: 'Clear', gate: 0.95 }).hook)
+    await start($, on)
+    await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['click "Clear"'] } as never))
+    expect(viaMcp.length).toBe(0)
+    expect(b.batches()).toBe(2)
+  })
+})
+
 describe('check', () => {
   test('says yes only when sure', ACTIVE, async ($, on) => {
     mock.store(on)

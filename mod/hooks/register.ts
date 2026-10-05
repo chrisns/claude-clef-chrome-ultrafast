@@ -10,6 +10,7 @@ import type { ClefChromeMetrics } from '../types'
 import { DEFAULT_TUNING, ground, parseStep, type Tuning } from './ground.ts'
 import { ask, type Client, embed, Fallback, type Reason } from './systemone.ts'
 import { type Element, findText, parse } from './tree.ts'
+import { type Action, isRoutine } from './safety.ts'
 
 const PLUGIN = 'clef-chrome'
 const CHROME = 'mcp__claude-in-chrome__'
@@ -33,7 +34,7 @@ const EMPTY: ClefChromeMetrics = { local: 0, fallback: {}, shadow: { agree: 0, d
 
 type $ = Parameters<Parameters<Parameters<Register>[0]>[2]>[0]
 
-type Cfg = { mode: 'off' | 'shadow' | 'active'; tuning: Tuning; timeoutMs: number; url: string; model: string; embedModel: string; settleMs: number }
+type Cfg = { mode: 'off' | 'shadow' | 'active'; tuning: Tuning; timeoutMs: number; url: string; model: string; embedModel: string; settleMs: number; fastRoutine: boolean; routineAt: number }
 
 // Kept per module load: a hot reload closes the breaker, which is fine.
 let fails = 0
@@ -197,8 +198,8 @@ type Item = { name: string; input: Record<string, unknown> }
 // Several claude-in-chrome actions in one browser_batch call. On its own, an input action
 // (click, type, key, form_input) took 2 to 9 s inside the mod; in a batch the same click took
 // 130 ms (bench/results/summary.md, speed). Returns each item's text, in order.
-async function batch($: $, items: Item[]): Promise<string[]> {
-  const text = await chrome($, 'browser_batch', { actions: items })
+async function batch($: $, items: Item[], fast = false): Promise<string[]> {
+  const text = (fast && (await fastBatch($, items))) || (await chrome($, 'browser_batch', { actions: items }))
   const starts: [number, number][] = []
   let from = 0
   for (const item of items) {
@@ -211,6 +212,58 @@ async function batch($: $, items: Item[]): Promise<string[]> {
     const end = n + 1 < starts.length ? starts[n + 1]![0] : text.length
     return text.slice(body, end).split('\n\nTab Context:')[0]!.trim()
   })
+}
+
+// fast_routine (off by default): a batch of routine actions goes straight to the extension with
+// $.mcp.call, so Claude Code's per-action site check and auto-mode classifier (~2.5 s a call,
+// bench/results/summary.md) are skipped. Three guards: every action in the batch passed
+// isRoutine (risk words, then clef-flash at routine_at; 0 of 29 risky actions passed in
+// bench/safety.ts), $.tool.check says your rules and mode allow this exact call, and the call
+// itself works. Claude's own browse call, which lists the URL and every step, is still reviewed.
+// Resolves undefined for the normal path.
+let fastBroken = false
+async function fastBatch($: $, items: Item[]): Promise<string | undefined> {
+  if (fastBroken) return undefined
+  const t = Date.now()
+  try {
+    const check = await $.tool.check({ tool: `${CHROME}browser_batch`, input: { actions: items } } as never)
+    const { decision } = check
+    if (decision !== 'allow') {
+      $.ui.log(`${PLUGIN}: fast path not allowed: ${JSON.stringify(check).slice(0, 300)}`, { to: 'debug' })
+      tick('fast:not-allowed', t)
+      return undefined
+    }
+    const r = await $.mcp.call('claude-in-chrome', 'browser_batch', { actions: items })
+    tick('fast:browser_batch', t)
+    if (r.isError) throw new Fallback('tool-error', `browser_batch: ${r.content.map(b => b.text ?? '').join(' ').slice(0, 300)}`)
+    return r.content.filter(b => b.type === 'text').map(b => b.text ?? '').join('\n')
+  } catch (err) {
+    if (err instanceof Fallback) throw err
+    fastBroken = true
+    $.ui.log(`${PLUGIN}: fast path off for this session: ${err}`, { to: 'debug' })
+    return undefined
+  }
+}
+
+// Every queued action is routine. A scroll or wait always is; the rest go through isRoutine
+// with the tab's current URL.
+type Safety = Omit<Action, 'url'> | 'safe'
+async function allRoutine($: $, cfg: Cfg, tabId: number, actions: Safety[]): Promise<boolean> {
+  if (!cfg.fastRoutine) return false
+  const t = Date.now()
+  try {
+    const url = /\((\S+)\)$/.exec(await pageNow($, tabId))?.[1] ?? ''
+    if (!url) return false
+    for (const a of actions) {
+      if (a === 'safe') continue
+      const v = await isRoutine(makeClient($, cfg), { ...a, url }, cfg.routineAt)
+      $.ui.log(`${PLUGIN}: SORT ${v.routine ? 'routine' : 'review'} p=${v.p.toFixed(2)} ${v.reason} "${a.step}" -> ${a.element} @ ${url}`, { to: 'debug' })
+      if (!v.routine) return false
+    }
+    return true
+  } finally {
+    tick('fast:sort', t)
+  }
 }
 
 // read_page "interactive" lists the elements in the viewport and "all" names them (with the
@@ -332,6 +385,8 @@ export const register: Register = (on, options) => {
     model: String(options.model ?? 'clef-flash'),
     embedModel: String(options.embed_model ?? 'nomic-embed-text'),
     settleMs: Number(options.settle_ms ?? 0),
+    fastRoutine: options.fast_routine === true,
+    routineAt: Number(options.routine_at ?? 0.8),
   }
   const feature = (k: string) => mode !== 'off' && options[k] !== false
 
@@ -419,6 +474,8 @@ export const register: Register = (on, options) => {
     timing = {}
     let tabId = input.tabId as number | undefined
     let page: Page | undefined
+    let batches = 0
+    let fastBatches = 0
     if (typeof input.url === 'string') {
       const url = input.url
       const r = await guarded($, cfg, async () => {
@@ -438,7 +495,11 @@ export const register: Register = (on, options) => {
           tabId = id
         }
         const id = tabId
-        const [, interactive = '', all = ''] = await batch($, [{ name: 'navigate', input: { url, tabId: id } }, ...readItems(id)])
+        const open = cfg.fastRoutine ? await isRoutine(makeClient($, cfg), { url, step: 'open the page', element: 'the page (link)' }, cfg.routineAt) : undefined
+        if (open) $.ui.log(`${PLUGIN}: SORT ${open.routine ? 'routine' : 'review'} p=${open.p.toFixed(2)} ${open.reason} "open the page" @ ${url}`, { to: 'debug' })
+        const openFast = open?.routine === true
+        if (openFast) fastBatches++
+        const [, interactive = '', all = ''] = await batch($, [{ name: 'navigate', input: { url, tabId: id } }, ...readItems(id)], openFast)
         page = pageOf(interactive, all)
         return id
       })
@@ -448,10 +509,11 @@ export const register: Register = (on, options) => {
     }
     const tab = tabId!
     const all = steps as string[]
+    let lastField: Element | undefined
     // Steps that do not change the page (fill, tick, select) are grounded on the page as it is
     // and queued; a click, Enter, scroll or wait closes the batch. Each batch costs ~2.5 s
     // whatever it holds, so signup's five steps now take one batch instead of five.
-    let queue: { step: number; items: Item[]; did: string }[] = []
+    let queue: { step: number; items: Item[]; did: string; safety: Safety }[] = []
     const failAt = async (i: number, detail: string) => {
       log.push(`✗ ${all[i]}: not done (${detail}).`)
       const rest = all.slice(i + 1)
@@ -468,11 +530,14 @@ export const register: Register = (on, options) => {
       if (!queue.length) return undefined
       const items = queue.flatMap(q => q.items)
       const owner = queue.flatMap(q => q.items.map(() => q.step))
+      const fast = await allRoutine($, cfg, tab, queue.map(q => q.safety))
+      batches++
+      if (fast) fastBatches++
       const r = await guarded($, cfg, async () => {
         // No settle wait by default (settle_ms): the extension already waits after a batch of input
         // actions, and a page that is still changing is caught by groundSettled's retry.
         const settle: Item[] = cfg.settleMs > 0 ? [{ name: 'computer', input: { tabId: tab, action: 'wait', duration: cfg.settleMs / 1000 } }] : []
-        const out = await batch($, [...items, ...settle, ...(last ? [] : readItems(tab))])
+        const out = await batch($, [...items, ...settle, ...(last ? [] : readItems(tab))], fast)
         page = last ? undefined : pageOf(out[out.length - 2] ?? '', out[out.length - 1] ?? '')
       })
       const n = r.ok ? undefined : /actions\[(\d+)\]/.exec(r.detail)?.[1]
@@ -497,7 +562,9 @@ export const register: Register = (on, options) => {
       let items: Item[]
       let did = ''
       let changes = true
+      let safety: Safety = 'safe'
       if (step.kind === 'enter') {
+        safety = { step: text, element: lastField ? `${lastField.label} (${lastField.role})` : 'the focused field' }
         items = [paint(tab), { name: 'computer', input: { tabId: tab, action: 'key', text: 'Enter', action_summary: 'Presses Enter' } }]
       } else if (step.kind === 'wait') {
         items = [{ name: 'computer', input: { tabId: tab, action: 'wait', duration: 1 } }]
@@ -522,6 +589,8 @@ export const register: Register = (on, options) => {
         const el = g.value.el
         page = g.value.page
         did = `${el.label} [${el.ref}]`
+        safety = { step: text, element: `${el.label} (${[el.role, el.hint].filter(Boolean).join(', ')})`, ...(step.value ? { value: step.value } : {}) }
+        if (el.kind === 'fill') lastField = el
         changes = false
         if (el.kind === 'click' && TOGGLES.has(el.role)) {
           // form_input sets the state, so "tick X" never unticks a box that is already ticked.
@@ -546,13 +615,14 @@ export const register: Register = (on, options) => {
           items = [{ name: 'form_input', input: { tabId: tab, ref: el.ref, value, action_summary: `Sets "${el.label.split(' → ')[0]}" to "${value}"` } }]
         }
       }
-      queue.push({ step: i, items, did })
+      queue.push({ step: i, items, did, safety })
       if (changes || lastStep) {
         const f = await flush(lastStep)
         if (f) return failAt(f.step, f.detail)
       }
     }
     log.push(`All steps done in tab ${tab}.`)
+    if (cfg.fastRoutine) log.push(`Fast path (routine actions, no per-action review): ${fastBatches} of ${batches + (typeof input.url === 'string' ? 1 : 0)} batches.`)
     tick('steps-total', startedAt)
     const expectAt = Date.now()
     if (typeof input.expect === 'string') {

@@ -153,3 +153,15 @@ End-to-end jobs, Opus, 3 runs each:
 - **17 of 20 routine actions** were scored routine. They scored 0.63 at least.
 
 A fast path that used this sort to skip Claude Code's per-action classifier was **not built**. The auto-mode classifier blocked the edit as an auto-mode bypass. Building it is the user's decision.
+
+### Update: the `fast_routine` option (built with the user's approval)
+
+`fast_routine` is opt-in and off by default. A batch goes straight to the extension with `$.mcp.call`, skipping the per-action review, only when all three of these are true:
+
+1. Every action in the batch passes `isRoutine` at `routine_at` (0.8).
+2. `$.tool.check` returns `allow`.
+3. The call works.
+
+In a live headless run in `bypassPermissions` mode, the sort scored the GOV.UK and Wikipedia actions as routine (0.90 to 0.97) and "type Lisbon" as needing review (0.68). But `$.tool.check` answered `ask` ("Claude in Chrome requires permission."), so every batch took the normal path.
+
+The fast path therefore works only when the person has explicit Claude-in-Chrome allow rules. It was not tested with such rules: adding them is a permission change, and that is the person's decision.

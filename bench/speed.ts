@@ -43,7 +43,7 @@ const options: Record<string, unknown> = { mode: 'active' }
 process.argv.forEach((a, i) => {
   if (a !== '--set') return
   const [k, v] = process.argv[i + 1]!.split('=')
-  options[k!] = Number.isNaN(Number(v)) ? v : Number(v)
+  options[k!] = v === 'true' ? true : v === 'false' ? false : Number.isNaN(Number(v)) ? v : Number(v)
 })
 const dir = new URL('./results/', import.meta.url).pathname
 mkdirSync(dir, { recursive: true })
