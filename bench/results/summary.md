@@ -248,3 +248,15 @@ All 9 runs passed.
 **Tried and not kept:** gate skip at 0.9, and prefilter to 12 options. Accuracy was the same (35/36 right, 0 wrong picks on 36 negative steps), and the time change was within noise. Each request costs about 0.2–0.3 s before it does any work, each yes/no question about 0.25 s, and each choice option only about 42 ms.
 
 **Outliers:** the slow wikipedia and govuk runs had `clef-flash` calls of about 2.4 s each, against 0.6–1 s in the other runs. That points to other GPU load at the time.
+
+## 10. `OLLAMA_NUM_PARALLEL=2`: tried and taken out
+
+With Ollama restarted and `OLLAMA_NUM_PARALLEL=2`, warmed, M1 Max:
+
+| Run | 2 yes/no, in sequence | 2 yes/no, in parallel | choice + yes/no, in sequence | choice + yes/no, in parallel |
+|---|---|---|---|---|
+| 1 (just after the warm-up) | 2,257 ms | 2,124 ms | 4,359 ms | 3,286 ms |
+| 2 | 985 ms | 794 ms | 1,668 ms | 2,022 ms |
+| 3 | 1,046 ms | 830 ms | 1,781 ms | 1,822 ms |
+
+**Result:** the GPU is already busy with one request. Parallel requests saved about 0.2 s on two yes/no questions and nothing on a choice plus a yes/no. That is not worth the extra code, or the extra memory that each parallel slot takes. The setting was removed and Ollama was restarted.
