@@ -212,3 +212,20 @@ Notes on this table:
   - Docs always hands back, because "API keys and tokens" means "Authentication" and that needs world knowledge.
   - One hotels run handed back at the "type Lisbon" fill, which scored 0.65.
 - **Cost.** `total_cost_usd` leaves out Claude Code's classifier calls in every row. The bridge makes no such calls for its own actions.
+
+## 8. Bridge speed work (fixed-argument speed bench, warmed models, 3 runs per job)
+
+| Job | Wall time | Inside `browse` | Plain Claude (median, section 7) |
+|---|---|---|---|
+| hotels | 15.7–17.0 s | 7.2–9.2 s | 38 s |
+| wikipedia | 13.7–16.0 s | 6.7–8.2 s | 44 s |
+| govuk | 15.5–20.7 s | 8.8–13.6 s | 48 s |
+
+All 9 runs passed. The changes:
+
+- **The screenshot stays.** Without the tiny screenshot, clicks and typing in a Comet window that was behind were lost. In one govuk run, that left the page unchanged, and the next step was grounded on the old page and clicked a wrong link.
+- **A stale-page guard.** If a click or Enter leaves the page exactly as it was, `browse` stops and hands back. It does not ground the next step on the old page.
+- **The safety sort asks the model only where that adds information.** Before the run, only the risk words, the injection filter, your rules and the mode decide. After grounding, the model judges an element only if its name adds words to the step, or if the step names nothing in quotes. Enter shares the check of its field. The sort fell from 2.9–4.0 s to 0.7–1.6 s per job.
+  - Trade-off: an exact step such as `click "OK"` on an exactly matching element is settled by the word rules only. Claude wrote that step, and Claude Code reviewed the `browse` call that lists it.
+- **`expect`.** It polls the tab's title and URL until the last click or Enter has changed the page (250 ms polls, at most 2 s), and then checks 2,000 characters of text. A second look comes after 0.6 s. It now takes 2.0–3.4 s, down from up to 6.5 s.
+- **Model warm-up.** The benches warm the models first, and every request sends `keep_alive`. During earlier runs, screenpipe's `gemma4:12b-mlx` shared the GPU, and `clef-flash` calls took 1.2–1.5 s each instead of 0.45–0.7 s.

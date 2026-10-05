@@ -4,6 +4,7 @@
 //   bun bench/speed.ts --label s0 [--runs 3] [--set settle_ms=400] [--jobs hotels,govuk]
 
 import { spawnSync } from 'node:child_process'
+import { warm } from './warm.ts'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 
 const BASE = 'http://127.0.0.1:8791/'
@@ -49,6 +50,7 @@ process.argv.forEach((a, i) => {
 })
 const dir = new URL('./results/', import.meta.url).pathname
 mkdirSync(dir, { recursive: true })
+await warm()
 const rows: unknown[] = []
 for (const [name, job] of Object.entries(JOBS).filter(([n]) => !only.length || only.includes(n))) {
   for (let n = 0; n < runs; n++) {

@@ -20,13 +20,17 @@ const BREAKER_FAILS = 3
 const BREAKER_MS = 5 * 60_000
 // The title, URL and start of the text decide a check; 12k characters of Wikipedia made each
 // check take 4 to 8 s.
-const PAGE_TEXT_CHARS = 3_000
+const PAGE_TEXT_CHARS = 2_000
 // A click or Enter can start a page load or a re-render that read_page would miss.
 const SEARCHY = (e: Element) => e.role === 'combobox' || e.role === 'searchbox' || e.inputType === 'search'
 const TOGGLES = new Set(['checkbox', 'radio', 'switch', 'menuitemcheckbox', 'menuitemradio'])
 const OFF = /\b(untick|uncheck|turn off|switch off|clear|deselect|disable|remove)\b/i
 const RETRY_MS = [800, 1600]
-const EXPECT_RETRY_MS = 1500
+// expect polls the tab's title and URL until the last click or Enter has changed the page,
+// then checks once; a "no" gets one quick second look.
+const EXPECT_POLL_MS = 250
+const EXPECT_POLL_MAX_MS = 2000
+const EXPECT_RETRY_MS = 600
 const OLLAMA_REASONS: Reason[] = ['ollama-down', 'http-error', 'timeout', 'bad-json']
 
 const metricsRef = { plugin: 'clef-chrome', key: 'metrics' } as const
@@ -199,8 +203,16 @@ type Item = { name: string; input: Record<string, unknown> }
 // Several claude-in-chrome actions in one browser_batch call. On its own, an input action
 // (click, type, key, form_input) took 2 to 9 s inside the mod; in a batch the same click took
 // 130 ms (bench/results/summary.md, speed). Returns each item's text, in order.
+// The URL each tab last reported, read from tool output, so the safety sort needs no extra
+// tabs_context call per batch.
+const urlOf = new Map<number, string>()
+function noteUrls(text: string) {
+  for (const m of text.matchAll(/tabId (\d+): "[^"\n]*" \("([^"\n]+)"\)/g)) urlOf.set(Number(m[1]), m[2]!)
+}
+
 async function batch($: $, items: Item[]): Promise<string[]> {
   const text = await chrome($, 'browser_batch', { actions: items })
+  noteUrls(text)
   const starts: [number, number][] = []
   let from = 0
   for (const item of items) {
@@ -255,8 +267,8 @@ export function fastAllowed(decision: string, mode: string | undefined): boolean
 }
 
 // Before a browse goes over the bridge: your rules and mode allow opening the page, and no risk
-// word is in the URL or a step. No model call yet: each batch's grounded elements get the model
-// check before the batch runs (allRoutine), which is the more informative one.
+// word or injection is in the URL or a step. clef-flash judges the grounded elements before each
+// batch runs (allRoutine).
 async function bridgeable($: $, cfg: Cfg, url: string, steps: string[]): Promise<boolean> {
   if (!cfg.bridge) return false
   const t = Date.now()
@@ -266,9 +278,15 @@ async function bridgeable($: $, cfg: Cfg, url: string, steps: string[]): Promise
       $.ui.log(`${PLUGIN}: bridge not used (rules ${decision}, mode ${permissionMode})`, { to: 'debug' })
       return false
     }
-    const risky = [{ step: 'open the page', element: 'the page (link)' }, ...steps.map(step => ({ step, element: step }))].find(a => wordsSayRisky({ ...a, url }))
-    if (risky) $.ui.log(`${PLUGIN}: bridge not used: risk word in "${risky.step}" or ${url}`, { to: 'debug' })
-    return !risky
+    const actions = [{ step: 'open the page', element: 'the page (link)' }, ...steps.map(step => ({ step, element: step }))].map(a => ({ ...a, url }))
+    const risky = actions.find(a => wordsSayRisky(a))
+    if (risky) {
+      $.ui.log(`${PLUGIN}: bridge not used: risk word in "${risky.step}" or ${url}`, { to: 'debug' })
+      return false
+    }
+    // No model call here: a step-level sort of 5 steps cost 2.8 s and mostly repeated what the
+    // word rules show. The model judges each grounded element where that adds information.
+    return true
   } catch {
     return false
   } finally {
@@ -282,15 +300,28 @@ type Safety = Omit<Action, 'url'> | 'safe'
 async function allRoutine($: $, cfg: Cfg, tabId: number, actions: Safety[]): Promise<boolean> {
   const t = Date.now()
   try {
-    const url = /\((\S+)\)$/.exec(await pageNow($, tabId))?.[1] ?? ''
+    const url = urlOf.get(tabId) ?? /\((\S+)\)$/.exec(await pageNow($, tabId))?.[1] ?? ''
     if (!url) return false
-    const checked = actions.filter((a): a is Omit<Action, 'url'> => a !== 'safe').map(a => ({ ...a, url }))
+    // The model judges an element only where it adds information: its name has words the step
+    // lacked, or the step names nothing in quotes ("click the blue button"). An exact-name step
+    // on an exactly-named element is settled by the word rules, which run on every action.
+    const checked = actions
+      .filter((a): a is Omit<Action, 'url'> => a !== 'safe')
+      .map(a => ({ ...a, url }))
+      .filter(a => wordsSayRisky(a) || addsWords(a.step, a.element) || !/["“]/.test(a.step))
     const verdicts = await areRoutine(makeClient($, cfg), checked, cfg.routineAt)
     verdicts.forEach((v, n) => $.ui.log(`${PLUGIN}: SORT ${v.routine ? 'routine' : 'review'} p=${v.p.toFixed(2)} ${v.reason} "${checked[n]!.step}" -> ${checked[n]!.element} @ ${url}`, { to: 'debug' }))
     return verdicts.every(v => v.routine)
   } finally {
     tick('bridge:sort', t)
   }
+}
+
+const wordsOf = (s: string) => (s.toLowerCase().match(/[\p{L}\p{N}]{3,}/gu) ?? []).map(w => w.replace(/(ing|ed|es|s)$/, ''))
+// True when the element's name (role hints aside) has a word the step text lacks.
+function addsWords(step: string, element: string): boolean {
+  const have = new Set(wordsOf(step))
+  return wordsOf(element.replace(/\s*\([^)]*\)\s*$/, '')).some(w => !have.has(w))
 }
 
 // read_page "interactive" lists the elements in the viewport and "all" names them (with the
@@ -387,8 +418,9 @@ async function pageNow($: $, tabId: number): Promise<string> {
 // drawn; a tiny screenshot draws one. Plain Claude never sees this: it screenshots often. It goes
 // into the step's batch, so Claude never pays tokens for it. No Escape: it closed a 1Password
 // menu once, but it also clears GOV.UK's search box.
-function paint(tabId: number): Item {
-  return { name: 'computer', input: { tabId, action: 'screenshot', scale: 0.1 } }
+function paint(tabId: number): Item[] {
+  // On the bridge too: with the Comet window behind, clicks and typing were lost without it.
+  return [{ name: 'computer', input: { tabId, action: 'screenshot', scale: 0.1 } }]
 }
 
 async function elementsOf($: $, tabId: number) {
@@ -548,10 +580,12 @@ export const register: Register = (on, options) => {
     const tab = tabId!
     const all = steps as string[]
     let lastField: Element | undefined
+    let lastFieldStep: string | undefined
+    let beforeLast: string | undefined
     // Steps that do not change the page (fill, tick, select) are grounded on the page as it is
     // and queued; a click, Enter, scroll or wait closes the batch. Each batch costs ~2.5 s
     // whatever it holds, so signup's five steps now take one batch instead of five.
-    let queue: { step: number; items: Item[]; did: string; safety: Safety }[] = []
+    let queue: { step: number; items: Item[]; did: string; safety: Safety; changes: boolean }[] = []
     const failAt = async (i: number, detail: string) => {
       log.push(`✗ ${all[i]}: not done (${detail}).`)
       const rest = all.slice(i + 1)
@@ -580,12 +614,22 @@ export const register: Register = (on, options) => {
         page = undefined
         return { step: first, detail: 'this action needs a review, so it was not run over the bridge' }
       }
+      const before = page?.key
+      const expectsChange = queue.some(q => q.changes)
       const r = await guarded($, cfg, async () => {
         // No settle wait by default (settle_ms): the extension already waits after a batch of input
         // actions, and a page that is still changing is caught by groundSettled's retry.
         const settle: Item[] = cfg.settleMs > 0 ? [{ name: 'computer', input: { tabId: tab, action: 'wait', duration: cfg.settleMs / 1000 } }] : []
         const out = await batch($, [...items, ...settle, ...(last ? [] : readItems(tab))])
         page = last ? undefined : pageOf(out[out.length - 2] ?? '', out[out.length - 1] ?? '')
+        // A click or Enter that left the page exactly as it was did not land (a lost click, an
+        // empty search): grounding the next step on the old page clicked a wrong link once
+        // (GOV.UK home page, bench/speed.ts). Look once more, then stop.
+        if (page && before !== undefined && expectsChange && page.key === before) {
+          await pause($, RETRY_MS[0]!)
+          page = await readPage($, tab)
+          if (page.key === before) throw new Fallback('no-elements', 'the page did not change, so the action probably did not land')
+        }
       })
       const n = r.ok ? undefined : /actions\[(\d+)\]/.exec(r.detail)?.[1]
       if (!r.ok && n !== undefined && Number(n) >= items.length) {
@@ -611,8 +655,9 @@ export const register: Register = (on, options) => {
       let changes = true
       let safety: Safety = 'safe'
       if (step.kind === 'enter') {
-        safety = { step: text, element: lastField ? `${lastField.label} (${lastField.role})` : 'the focused field' }
-        items = [paint(tab), { name: 'computer', input: { tabId: tab, action: 'key', text: 'Enter', action_summary: 'Presses Enter' } }]
+        // Enter submits the field just filled: it shares that field's check (an unknown field: the model).
+        safety = lastFieldStep && lastField ? { step: lastFieldStep, element: `${lastField.label} (${lastField.role})` } : { step: text, element: 'the focused field' }
+        items = [...paint(tab), { name: 'computer', input: { tabId: tab, action: 'key', text: 'Enter', action_summary: 'Presses Enter' } }]
       } else if (step.kind === 'wait') {
         items = [{ name: 'computer', input: { tabId: tab, action: 'wait', duration: 1 } }]
       } else if (step.kind === 'scroll_down' || step.kind === 'scroll_up') {
@@ -637,14 +682,17 @@ export const register: Register = (on, options) => {
         page = g.value.page
         did = `${el.label} [${el.ref}]`
         safety = { step: text, element: `${el.label} (${[el.role, el.hint].filter(Boolean).join(', ')})`, ...(step.value ? { value: step.value } : {}) }
-        if (el.kind === 'fill') lastField = el
+        if (el.kind === 'fill') {
+          lastField = el
+          lastFieldStep = text
+        }
         changes = false
         if (el.kind === 'click' && TOGGLES.has(el.role)) {
           // form_input sets the state, so "tick X" never unticks a box that is already ticked.
           const ticked = !OFF.test(step.text)
           items = [{ name: 'form_input', input: { tabId: tab, ref: el.ref, value: ticked, action_summary: `${ticked ? 'Ticks' : 'Unticks'} "${el.label}"` } }]
         } else if (el.kind === 'click') {
-          items = [paint(tab), { name: 'computer', input: { tabId: tab, action: 'left_click', ref: el.ref, action_summary: `Clicks "${el.label}"` } }]
+          items = [...paint(tab), { name: 'computer', input: { tabId: tab, action: 'left_click', ref: el.ref, action_summary: `Clicks "${el.label}"` } }]
           changes = true
         } else if (el.kind === 'fill' && SEARCHY(el)) {
           // A script-driven search box (GOV.UK, Wikipedia) keeps its own copy of the text: a value
@@ -653,7 +701,7 @@ export const register: Register = (on, options) => {
           // ("Cannot access a chrome-extension:// URL"), and form_input works there.
           const value = step.value ?? ''
           items = [
-            paint(tab),
+            ...paint(tab),
             { name: 'computer', input: { tabId: tab, action: 'triple_click', ref: el.ref, action_summary: `Selects the text in "${el.label}"` } },
             { name: 'computer', input: { tabId: tab, action: 'type', text: value, action_summary: `Types "${value}" into "${el.label}"` } },
           ]
@@ -662,8 +710,10 @@ export const register: Register = (on, options) => {
           items = [{ name: 'form_input', input: { tabId: tab, ref: el.ref, value, action_summary: `Sets "${el.label.split(' → ')[0]}" to "${value}"` } }]
         }
       }
-      queue.push({ step: i, items, did, safety })
+      queue.push({ step: i, items, did, safety, changes })
       if (changes || lastStep) {
+        // The page as it was before the last action: expect waits until it is not.
+        if (lastStep && changes && typeof input.expect === 'string') beforeLast = await pageNow($, tab)
         const f = await flush(lastStep)
         if (f) return failAt(f.step, f.detail)
       }
@@ -673,8 +723,13 @@ export const register: Register = (on, options) => {
     tick('steps-total', startedAt)
     const expectAt = Date.now()
     if (typeof input.expect === 'string') {
-      // A click or Enter can start a navigation that outlasts the batch (Wikipedia search
-      // did): a "no" or "unsure" gets one more look before it goes back to Claude.
+      // A click or Enter can start a navigation that outlasts the batch (Wikipedia search did).
+      // Poll the title and URL (read-only, ~0.1 s each) until they change, at most 2 s, then
+      // check; a fixed 1 s wait and a 1.5 s retry made the Wikipedia check take 6 s.
+      if (beforeLast !== undefined) {
+        const until = Date.now() + EXPECT_POLL_MAX_MS
+        while (Date.now() < until && (await pageNow($, tab)) === beforeLast) await pause($, EXPECT_POLL_MS)
+      }
       let verdict = await checkPage($, cfg, tab, input.expect)
       if (!verdict.startsWith('yes')) {
         await pause($, EXPECT_RETRY_MS)

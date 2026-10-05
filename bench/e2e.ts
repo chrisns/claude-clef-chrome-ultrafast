@@ -6,6 +6,7 @@
 //   bun bench/e2e.ts --label mod --mod          # with clef-chrome in active mode
 //   options: --runs N  --model opus  --jobs hotels,signup  --set key=value (mod options)
 
+import { warm } from './warm.ts'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { spawn } from 'node:child_process'
 
@@ -170,6 +171,7 @@ if (import.meta.main) {
   const only = arg('--jobs', '').split(',').filter(Boolean)
   const dir = new URL('./results/', import.meta.url).pathname
   mkdirSync(dir, { recursive: true })
+  if (withMod) await warm()
   const all: RunResult[] = []
   for (const job of JOBS.filter(j => !only.length || only.includes(j.name))) {
     for (let n = 0; n < runs; n++) {

@@ -254,6 +254,19 @@ describe('browse', () => {
     expect(b.batches()).toBe(2)
   })
 
+  test('stops when a click leaves the page as it was', ACTIVE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    const b = browser(on) // read_page always returns the same tree: the click did not land
+    on('http.fetch', ollama({ pick: 'Clear', gate: 0.97 }).hook)
+    await start($, on)
+    const r = await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['click "Clear"', 'click "Subscribe"'] } as never))
+    const text = textOf(r)
+    expect(text).toContain('the page did not change')
+    expect(text).toContain('Not run: "click Subscribe"'.replace('"click Subscribe"', JSON.stringify('click "Subscribe"')))
+    expect(b.actions.filter(a => a.action === 'left_click').length).toBe(1)
+  })
+
   test('types real keystrokes into a search box', ACTIVE, async ($, on) => {
     mock.store(on)
     const clock = mock.clock(on)
