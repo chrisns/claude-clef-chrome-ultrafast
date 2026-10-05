@@ -3,3 +3,4 @@ bench/results/*.json
 mod/.claude-plugin/types/
 .DS_Store
 bench/results/debug-*.txt
+bench/results/latest

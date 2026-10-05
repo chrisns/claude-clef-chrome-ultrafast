@@ -97,3 +97,59 @@ Each item failed in a run and is now fixed. The source comments name each one.
 8. **`read_page` `all` lists hidden elements.** A collapsed GOV.UK search box was chosen. The mod now grounds among the elements in the viewport (`interactive`) first.
 9. **The option cap.** 25 candidates plus "none of these" must stay within Ollama's 26-option limit. The bench caught this, and every affected case handed back safely.
 10. **Auto mode** gives no verdict for a plugin's nested browser actions. `browse` therefore needs allow rules for the claude-in-chrome tools, or another permission mode.
+
+## 6. Speed work (commit 7984ec4)
+
+### Where the time went
+
+These numbers come from the `TIMING` debug line in `browse` and from the extension's own log.
+
+| Tool | Extension time (median) | Time until the hook gets the answer (median) |
+|---|---|---|
+| `browser_batch` | 472 ms | 2,553 ms |
+| `navigate` | 540 ms | 3,401 ms |
+| `read_page` | 116 ms | 249 ms |
+
+- **The gap is a check, not the browser.** Claude Code checks each browser action call before the extension runs it. The check is a site pre-check plus the auto-mode classifier: a Sonnet request with about 139k characters of context, about 1 to 2.5 s each. It runs in `bypassPermissions` mode too. Read-only calls skip it.
+- **The baseline pays it too.** One baseline signup run made 7 classifier calls, and a mod run makes 3 or 4. `total_cost_usd` does not include these calls in either configuration.
+- **Where it sits in `browse`.** In one hotels `browse` of 17.6 s, permission checks took 9.9 s, Chrome took 5.3 s and clef-flash took about 2.5 s.
+
+### Changes and results
+
+The changes:
+
+- one `browser_batch` per group of actions;
+- the page-neutral steps (fill, tick, select) queued until the next click or Enter;
+- the page read in the same batch as the action;
+- retries only while the page changes;
+- the models loaded at session start;
+- an embedding cache;
+- the gate skipped when the choice is at least 0.95 sure (0 wrong picks on 36 negative steps; 1 wrong pick at 0.8);
+- real typing only in search boxes;
+- 3,000 characters of page text for `check`.
+
+Fixed `browse` arguments, wall time of the whole headless run, median of 3 runs, all passed (`bench/speed.ts`):
+
+| Job | v1 (c3c4d0e) | v2 (7984ec4) |
+|---|---|---|
+| hotels | 37.6 s | 21.9 s |
+| signup | 37.6 s | 28.6 s |
+| govuk | 34.6 s | 25.1 s |
+| wikipedia | 30.9 s | 28.5 s |
+
+End-to-end jobs, Opus, 3 runs each:
+
+| | Mean wall time | Mean turns | Cost of 15 runs | Passed |
+|---|---|---|---|---|
+| Plain Claude-in-Chrome | 53.6 s | 8.7 | $2.38 | 15/15 |
+| Mod v1 | 45.2 s | 3.6 | $0.86 | 15/15 |
+| Mod v2 | 35.0 s | 3.9 | $0.98 | 15/15 |
+
+### The routine-action sort (`bench/safety.ts`): measured only, not used
+
+`mod/hooks/safety.ts` sorts an action as routine or as needing review. It uses fixed risk words for the step, the element name and the URL path, and then a clef-flash yes/no. On 49 actions at a threshold of 0.8:
+
+- **0 of 29 risky actions** were scored routine. The words caught 22, and the model caught the rest, which scored 0.29 at most.
+- **17 of 20 routine actions** were scored routine. They scored 0.63 at least.
+
+A fast path that used this sort to skip Claude Code's per-action classifier was **not built**. The auto-mode classifier blocked the edit as an auto-mode bypass. Building it is the user's decision.
