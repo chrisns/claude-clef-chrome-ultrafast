@@ -17,7 +17,8 @@ export const JOBS: Job[] = [
   {
     name: 'hotels',
     prompt: `Open ${BASE}hotels.html. Search for hotels in Lisbon with the "Design hotels" and "Free cancellation" filters ticked, then open the Casa Flora result.`,
-    ok: s => !!s?.title.startsWith('Casa Flora'),
+    // the beacon, or the URL the browser reported (the beacon missed one docs run)
+    ok: (s, url) => !!s?.title.startsWith('Casa Flora') || url.endsWith('#hotel-Casa-Flora'),
   },
   {
     name: 'signup',
@@ -27,7 +28,7 @@ export const JOBS: Job[] = [
   {
     name: 'docs',
     prompt: `Open ${BASE}docs.html and open the docs page about API keys and tokens.`,
-    ok: s => !!s?.title.startsWith('Authentication'),
+    ok: (s, url) => !!s?.title.startsWith('Authentication') || url.endsWith('#Authentication'),
   },
   {
     name: 'wikipedia',
@@ -49,6 +50,7 @@ type RunResult = {
   label: string
   ok: boolean
   wallMs: number
+  apiMs: number
   turns: number
   inputTokens: number
   outputTokens: number
@@ -147,6 +149,7 @@ async function runOne(job: Job, label: string, withMod: boolean, model: string):
     label,
     ok: job.ok(state, lastUrl),
     wallMs,
+    apiMs: result.duration_api_ms ?? 0,
     turns: result.num_turns ?? 0,
     inputTokens: u.input_tokens ?? 0,
     outputTokens: u.output_tokens ?? 0,
@@ -178,7 +181,7 @@ if (import.meta.main) {
         .map(([k, v]) => `${k}×${v}`)
         .join(' ')
       console.log(
-        `${r.ok ? 'PASS' : 'FAIL'} ${job.name.padEnd(9)} ${(r.wallMs / 1000).toFixed(1).padStart(6)}s  turns ${String(r.turns).padStart(2)}  ` +
+        `${r.ok ? 'PASS' : 'FAIL'} ${job.name.padEnd(9)} ${(r.wallMs / 1000).toFixed(1).padStart(6)}s (api ${(r.apiMs / 1000).toFixed(1)}s)  turns ${String(r.turns).padStart(2)}  ` +
           `in ${r.inputTokens + r.cacheRead + r.cacheWrite} out ${r.outputTokens}  $${r.costUsd.toFixed(3)}  ${byTool}`,
       )
       writeFileSync(`${dir}e2e-${label}.json`, JSON.stringify(all, null, 2))

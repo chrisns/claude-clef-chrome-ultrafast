@@ -8,8 +8,8 @@
 import type { Register } from 'claude-code'
 import type { ClefChromeMetrics } from '../types'
 import { DEFAULT_TUNING, ground, parseStep, type Tuning } from './ground.ts'
-import { ask, type Client, Fallback, type Reason } from './systemone.ts'
-import { findText, parse } from './tree.ts'
+import { ask, type Client, embed, Fallback, type Reason } from './systemone.ts'
+import { type Element, findText, parse } from './tree.ts'
 
 const PLUGIN = 'clef-chrome'
 const CHROME = 'mcp__claude-in-chrome__'
@@ -17,13 +17,15 @@ const BROWSE = `mcp__${PLUGIN}__browse`
 const CHECK = `mcp__${PLUGIN}__check`
 const BREAKER_FAILS = 3
 const BREAKER_MS = 5 * 60_000
-const PAGE_TEXT_CHARS = 12_000
+// The title, URL and start of the text decide a check; 12k characters of Wikipedia made each
+// check take 4 to 8 s.
+const PAGE_TEXT_CHARS = 3_000
 // A click or Enter can start a page load or a re-render that read_page would miss.
-const SETTLE_MS = 400
+const SEARCHY = (e: Element) => e.role === 'combobox' || e.role === 'searchbox' || e.inputType === 'search'
 const TOGGLES = new Set(['checkbox', 'radio', 'switch', 'menuitemcheckbox', 'menuitemradio'])
 const OFF = /\b(untick|uncheck|turn off|switch off|clear|deselect|disable|remove)\b/i
 const RETRY_MS = [800, 1600]
-const EXPECT_WAIT_MS = [1000, 1500]
+const EXPECT_RETRY_MS = 1500
 const OLLAMA_REASONS: Reason[] = ['ollama-down', 'http-error', 'timeout', 'bad-json']
 
 const metricsRef = { plugin: 'clef-chrome', key: 'metrics' } as const
@@ -31,12 +33,38 @@ const EMPTY: ClefChromeMetrics = { local: 0, fallback: {}, shadow: { agree: 0, d
 
 type $ = Parameters<Parameters<Parameters<Register>[0]>[2]>[0]
 
-type Cfg = { mode: 'off' | 'shadow' | 'active'; tuning: Tuning; timeoutMs: number; url: string; model: string; embedModel: string }
+type Cfg = { mode: 'off' | 'shadow' | 'active'; tuning: Tuning; timeoutMs: number; url: string; model: string; embedModel: string; settleMs: number }
 
 // Kept per module load: a hot reload closes the breaker, which is fine.
 let fails = 0
 let openUntil = 0
 let lastNow = 0
+// Label embeddings, so later steps on the same page embed only the step text.
+const EMBEDS = new Map<string, number[]>()
+
+// Where a browse call spends its time, by phase (debug log only). Date.now, not $.clock, so the
+// mocked clock in tests is not touched.
+let timing: Record<string, [number, number]> | undefined
+function tick(key: string, since: number) {
+  if (!timing) return
+  const t = (timing[key] ??= [0, 0])
+  t[0] += Date.now() - since
+  t[1]++
+}
+function logTiming($: $, steps: number, startedAt: number) {
+  const phases = Object.entries(timing ?? {})
+    .sort((a, b) => b[1][0] - a[1][0])
+    .map(([k, [ms, n]]) => `${k}=${ms}ms/${n}`)
+    .join(' ')
+  $.ui.log(`${PLUGIN}: TIMING browse ${steps} steps ${Date.now() - startedAt}ms ${phases}`, { to: 'debug' })
+  timing = undefined
+}
+
+async function pause($: $, ms: number) {
+  const t = Date.now()
+  await $.clock.sleep(ms)
+  tick('sleep', t)
+}
 
 function makeClient($: $, cfg: Cfg): Client {
   return {
@@ -45,6 +73,7 @@ function makeClient($: $, cfg: Cfg): Client {
     timeoutMs: cfg.timeoutMs,
     keepAlive: '30m',
     embedModel: cfg.embedModel || undefined,
+    embedCache: EMBEDS,
     post: async (url, body, ms) => {
       const started = await $.clock.now()
       const res = await Promise.race([
@@ -52,6 +81,7 @@ function makeClient($: $, cfg: Cfg): Client {
         $.clock.sleep(ms).then(() => 'timeout' as const),
       ])
       const took = (await $.clock.now()) - started
+      tick(url.endsWith('/api/embed') ? 'ollama:embed' : 'ollama:systemone', Date.now() - took)
       $.ui.log(`${PLUGIN}: ${url.endsWith('/api/embed') ? 'embed' : 'systemone'} ${body.length} chars ${res === 'timeout' ? 'TIMEOUT' : res.status} ${took} ms`, { to: 'debug' })
       if (res === 'timeout') throw new Fallback('timeout', `${ms} ms`)
       return { status: res.status, text: res.text }
@@ -60,6 +90,7 @@ function makeClient($: $, cfg: Cfg): Client {
 }
 
 async function record($: $, cfg: Cfg, change: (m: ClefChromeMetrics) => void) {
+  const t = Date.now()
   const { value } = await $.state.get(metricsRef)
   const m: ClefChromeMetrics = JSON.parse(JSON.stringify(value ?? ((await $.store.get('metrics')) as ClefChromeMetrics | undefined) ?? EMPTY))
   change(m)
@@ -69,6 +100,7 @@ async function record($: $, cfg: Cfg, change: (m: ClefChromeMetrics) => void) {
   const shadow = cfg.mode === 'shadow' ? ` · shadow ${m.shadow.agree}/${m.shadow.agree + m.shadow.disagree} agree` : ''
   const breaker = lastNow < openUntil ? ' · breaker open' : ''
   $.ui.status(`clef: ${m.local} local · ${back} → claude${shadow}${breaker}`)
+  tick('record', t)
 }
 
 type Guarded<T> = { ok: true; value: T } | { ok: false; reason: Reason; detail: string }
@@ -99,7 +131,9 @@ async function guarded<T>($: $, cfg: Cfg, work: () => Promise<T>): Promise<Guard
 
 // A browser tool called from inside a hook. Any error or deny is a Fallback.
 async function chrome($: $, tool: string, args: Record<string, unknown>): Promise<string> {
+  const t = Date.now()
   const r = await $.tool.call({ tool: `${CHROME}${tool}`, ...args } as never)
+  tick(`chrome:${tool}${args.action ? `:${String(args.action)}` : ''}${args.filter ? `:${String(args.filter)}` : ''}`, t)
   if (r.deny !== undefined) throw new Fallback('tool-error', `${tool} denied: ${r.deny}`)
   if (r.isError) throw new Fallback('tool-error', `${tool}: ${r.text ?? 'failed'}`)
   return r.text ?? textOf(r.result)
@@ -157,36 +191,104 @@ async function screenshotOf($: $, tabId: number): Promise<string[]> {
   return [base64]
 }
 
-// Ground a step; when the page may still be loading (no element, low gate, read_page refused
-// mid-navigation), read it again after a pause. Retrying a stale page is cheaper than a Claude turn.
-// Each attempt tries the elements in the viewport first: read_page "all" also lists hidden
-// elements (GOV.UK's collapsed banner search box won once, and Enter in it did nothing).
-async function groundSettled($: $, cfg: Cfg, step: ReturnType<typeof parseStep>, tabId: number) {
+type Page = { all: Element[]; visible: Element[]; key: string }
+type Item = { name: string; input: Record<string, unknown> }
+
+// Several claude-in-chrome actions in one browser_batch call. On its own, an input action
+// (click, type, key, form_input) took 2 to 9 s inside the mod; in a batch the same click took
+// 130 ms (bench/results/summary.md, speed). Returns each item's text, in order.
+async function batch($: $, items: Item[]): Promise<string[]> {
+  const text = await chrome($, 'browser_batch', { actions: items })
+  const starts: [number, number][] = []
+  let from = 0
+  for (const item of items) {
+    const m = new RegExp(`\\[${item.name}(?::\\w+)?\\] ?`).exec(text.slice(from))
+    if (!m) throw new Fallback('tool-error', `browser_batch: no output for ${item.name}`)
+    starts.push([from + m.index, from + m.index + m[0].length])
+    from = from + m.index + m[0].length
+  }
+  return starts.map(([, body], n) => {
+    const end = n + 1 < starts.length ? starts[n + 1]![0] : text.length
+    return text.slice(body, end).split('\n\nTab Context:')[0]!.trim()
+  })
+}
+
+// read_page "interactive" lists the elements in the viewport and "all" names them (with the
+// <label> text "interactive" drops); the refs are the same in both.
+function readItems(tabId: number): Item[] {
+  return [
+    { name: 'read_page', input: { tabId, filter: 'interactive' } },
+    { name: 'read_page', input: { tabId, filter: 'all' } },
+  ]
+}
+
+function pageOf(interactive: string, all: string): Page {
+  const refs = new Set(interactive.match(/\bref_\d+\b/g) ?? [])
+  const elements = parse(all)
+  return { all: elements, visible: elements.filter(e => refs.has(e.ref)), key: all }
+}
+
+async function readPage($: $, tabId: number): Promise<Page> {
+  const [interactive = '', all = ''] = await batch($, readItems(tabId))
+  return pageOf(interactive, all)
+}
+
+const soft = (err: unknown) => err instanceof Fallback && ['no-elements', 'low-gate'].includes(err.reason)
+
+// The elements in the viewport first: read_page "all" also lists hidden elements (GOV.UK's
+// collapsed banner search box won once, and Enter in it did nothing). Then only the rest, so no
+// element is asked about twice.
+async function groundIn($: $, cfg: Cfg, step: ReturnType<typeof parseStep>, page: Page): Promise<Element> {
+  if (page.visible.length) {
+    try {
+      return (await ground(makeClient($, cfg), step, page.visible, cfg.tuning)).element
+    } catch (err) {
+      if (!soft(err)) throw err
+    }
+  }
+  const shown = new Set(page.visible)
+  const rest = page.all.filter(e => !shown.has(e))
+  if (!rest.length && page.visible.length) throw new Fallback('low-gate', `nothing on the page matches: ${step.text}`)
+  return (await ground(makeClient($, cfg), step, rest, cfg.tuning)).element
+}
+
+// Ground a step. When the page may still be loading (no element, low gate, read_page refused
+// mid-navigation), read it again after a pause; a stale page is cheaper to retry than a Claude
+// turn. A third try runs only when the page changed: on docs one hopeless step used to cost 18
+// model calls and 30 s.
+async function groundSettled($: $, cfg: Cfg, step: ReturnType<typeof parseStep>, tabId: number, page: Page | undefined): Promise<{ el: Element; page: Page }> {
+  let current = page
   for (let attempt = 0; ; attempt++) {
     try {
-      const { all, visible } = await pageElements($, tabId)
-      try {
-        if (visible.length) return (await ground(makeClient($, cfg), step, visible, cfg.tuning)).element
-      } catch (err) {
-        if (!(err instanceof Fallback && ['no-elements', 'low-gate'].includes(err.reason))) throw err
-      }
-      return (await ground(makeClient($, cfg), step, all, cfg.tuning)).element
+      current ??= await readPage($, tabId)
+      return { el: await groundIn($, cfg, step, current), page: current }
     } catch (err) {
       const wait = RETRY_MS[attempt]
-      const stale = err instanceof Fallback && (['no-elements', 'low-gate'].includes(err.reason) || /web page first|loading/i.test(err.message))
+      const stale = soft(err) || (err instanceof Fallback && /web page first|loading/i.test(err.message))
       if (!stale || wait === undefined) throw err
-      await $.clock.sleep(wait)
+      const before = current?.key
+      await pause($, wait)
+      current = undefined
+      try {
+        current = await readPage($, tabId)
+      } catch {
+        continue
+      }
+      if (attempt >= 1 && current.key === before) throw err
     }
   }
 }
 
-// The page's elements, named from the full tree, and the ones read_page "interactive" lists:
-// that filter keeps only elements visible in the viewport, and the refs are the same.
-async function pageElements($: $, tabId: number) {
-  const shown = await chrome($, 'read_page', { tabId, filter: 'interactive' })
-  const refs = new Set(shown.match(/\bref_\d+\b/g) ?? [])
-  const all = parse(await chrome($, 'read_page', { tabId, filter: 'all' }))
-  return { all, visible: all.filter(e => refs.has(e.ref)) }
+// Load the models before the first browse step: a cold clef-flash took more than 8 s once,
+// timed out, and the job fell back to Claude. Errors are ignored.
+async function warm($: $, cfg: Cfg) {
+  const client = { ...makeClient($, cfg), timeoutMs: 120_000 }
+  try {
+    await ask(client, 'warm-up', { w: { type: 'noul', instructions: 'Is this text a warm-up?' } })
+    await embed(client, 'warm-up', ['warm-up'])
+  } catch {
+    // the first real request pays the load instead
+  }
 }
 
 // The tab's title and URL as the browser reports them.
@@ -201,13 +303,12 @@ async function pageNow($: $, tabId: number): Promise<string> {
   }
 }
 
-// Make the next ref click land: a tab Chrome is not painting (visibilityState "hidden")
-// ignores ref clicks until a frame is drawn, and a tiny screenshot draws one. Plain Claude never
-// sees this: it screenshots often. The screenshot stays inside this hook (no Claude tokens).
-// No Escape: it closed a 1Password menu once, but it also clears GOV.UK's search box, and with
-// typed fills plus this screenshot the menu no longer blocked a click (bench/e2e.ts, hotels).
-async function prepareClick($: $, tabId: number) {
-  await chrome($, 'computer', { tabId, action: 'screenshot', scale: 0.1 })
+// A tab Chrome is not painting (visibilityState "hidden") ignores ref clicks until a frame is
+// drawn; a tiny screenshot draws one. Plain Claude never sees this: it screenshots often. It goes
+// into the step's batch, so Claude never pays tokens for it. No Escape: it closed a 1Password
+// menu once, but it also clears GOV.UK's search box.
+function paint(tabId: number): Item {
+  return { name: 'computer', input: { tabId, action: 'screenshot', scale: 0.1 } }
 }
 
 async function elementsOf($: $, tabId: number) {
@@ -220,6 +321,8 @@ export const register: Register = (on, options) => {
     ...DEFAULT_TUNING,
     gate: Number(options.gate ?? DEFAULT_TUNING.gate),
     minMargin: Number(options.min_margin ?? DEFAULT_TUNING.minMargin),
+    // 0.95: no wrong pick on the 36 negative steps; at 0.8 one wrong pick (bench/ground.ts).
+    ...(Number(options.skip_gate_at ?? 0.95) < 1 ? { skipGateAt: Number(options.skip_gate_at ?? 0.95) } : {}),
   }
   const cfg: Cfg = {
     mode,
@@ -228,11 +331,13 @@ export const register: Register = (on, options) => {
     url: String(options.ollama_url ?? 'http://localhost:11434/v1/systemone'),
     model: String(options.model ?? 'clef-flash'),
     embedModel: String(options.embed_model ?? 'nomic-embed-text'),
+    settleMs: Number(options.settle_ms ?? 0),
   }
   const feature = (k: string) => mode !== 'off' && options[k] !== false
 
   on('session.start', async ($, e, next) => {
     const out = await next(e)
+    if (mode !== 'off') $.clock.after(0, () => warm($, cfg))
     // Each tool registers on its own: one refusal (e.g. a session started with --tools "")
     // must not keep the others away.
     if (feature('browse')) {
@@ -310,79 +415,160 @@ export const register: Register = (on, options) => {
       return { result: 'browse needs { steps: string[] } and a tabId or a url. Nothing was done; use the normal claude-in-chrome tools.' }
     }
     const log: string[] = []
+    const startedAt = Date.now()
+    timing = {}
     let tabId = input.tabId as number | undefined
+    let page: Page | undefined
     if (typeof input.url === 'string') {
+      const url = input.url
       const r = await guarded($, cfg, async () => {
-        const text = await chrome($, 'navigate', tabId === undefined ? { url: input.url } : { url: input.url, tabId })
-        const id = Number(/Executed on tabId: (\d+)/.exec(text)?.[1] ?? /tabId (\d+)/.exec(text)?.[1])
-        if (!Number.isFinite(id)) throw new Fallback('tool-error', 'no tab id in the navigate result')
+        if (tabId === undefined) {
+          // A tab, then navigate and the first reads in one round trip (a standalone navigate took
+          // 2 to 4 s and the reads another batch). The session's group must exist before
+          // tabs_create_mcp works; its first, empty tab is reused.
+          const ctx = await chrome($, 'tabs_context_mcp', { createIfEmpty: true })
+          const tabs = (JSON.parse(ctx.slice(ctx.indexOf('{'), ctx.lastIndexOf('}') + 1)) as { availableTabs?: { tabId: number; url: string }[] }).availableTabs ?? []
+          const empty = tabs.find(t => t.url === '' || t.url === 'about:blank' || t.url.startsWith('chrome://newtab'))
+          let id = empty?.tabId
+          if (id === undefined) {
+            const text = await chrome($, 'tabs_create_mcp', {})
+            id = Number(/Tab ID: (\d+)/.exec(text)?.[1] ?? /Executed on tabId: (\d+)/.exec(text)?.[1])
+          }
+          if (!Number.isFinite(id)) throw new Fallback('tool-error', 'no tab to open the page in')
+          tabId = id
+        }
+        const id = tabId
+        const [, interactive = '', all = ''] = await batch($, [{ name: 'navigate', input: { url, tabId: id } }, ...readItems(id)])
+        page = pageOf(interactive, all)
         return id
       })
-      if (!r.ok) return { result: `✗ open ${input.url}: not done (${r.detail}). Use the normal claude-in-chrome tools.` }
+      if (!r.ok) return { result: `✗ open ${url}: not done (${r.detail}). Use the normal claude-in-chrome tools.` }
       tabId = r.value
-      log.push(`✓ opened ${input.url} in tab ${tabId}`)
+      log.push(`✓ opened ${url} in tab ${tabId}`)
     }
     const tab = tabId!
-    for (const [i, text] of (steps as string[]).entries()) {
-      const step = parseStep(text)
+    const all = steps as string[]
+    // Steps that do not change the page (fill, tick, select) are grounded on the page as it is
+    // and queued; a click, Enter, scroll or wait closes the batch. Each batch costs ~2.5 s
+    // whatever it holds, so signup's five steps now take one batch instead of five.
+    let queue: { step: number; items: Item[]; did: string }[] = []
+    const failAt = async (i: number, detail: string) => {
+      log.push(`✗ ${all[i]}: not done (${detail}).`)
+      const rest = all.slice(i + 1)
+      if (rest.length) log.push(`Not run: ${rest.map(x => JSON.stringify(x)).join(', ')}.`)
+      log.push(`Continue with the normal claude-in-chrome tools from this step (tab ${tab}).`)
+      logTiming($, i + 1, startedAt)
+      const now = await pageNow($, tab)
+      if (now) log.push(now)
+      return { result: log.join('\n') }
+    }
+    // Run the queued actions, then read the page for the next step (not after the last one:
+    // expect reads the page text itself). Resolves the failed step, if any.
+    const flush = async (last: boolean): Promise<{ step: number; detail: string } | undefined> => {
+      if (!queue.length) return undefined
+      const items = queue.flatMap(q => q.items)
+      const owner = queue.flatMap(q => q.items.map(() => q.step))
       const r = await guarded($, cfg, async () => {
-        if (step.kind === 'enter') {
-          await prepareClick($, tab)
-          await chrome($, 'computer', { tabId: tab, action: 'key', text: 'Enter', action_summary: 'Presses Enter' })
-          return void (await $.clock.sleep(SETTLE_MS))
+        // No settle wait by default (settle_ms): the extension already waits after a batch of input
+        // actions, and a page that is still changing is caught by groundSettled's retry.
+        const settle: Item[] = cfg.settleMs > 0 ? [{ name: 'computer', input: { tabId: tab, action: 'wait', duration: cfg.settleMs / 1000 } }] : []
+        const out = await batch($, [...items, ...settle, ...(last ? [] : readItems(tab))])
+        page = last ? undefined : pageOf(out[out.length - 2] ?? '', out[out.length - 1] ?? '')
+      })
+      const n = r.ok ? undefined : /actions\[(\d+)\]/.exec(r.detail)?.[1]
+      if (!r.ok && n !== undefined && Number(n) >= items.length) {
+        // Only a read failed (a page mid-navigation: "Page script returned
+        // empty result"): the actions ran. Read the page again before the next step.
+        page = undefined
+      } else if (!r.ok) {
+        const failed = n !== undefined ? owner[Number(n)] ?? queue[0]!.step : queue[0]!.step
+        for (const q of queue) if (q.step < failed) log.push(`✓ ${all[q.step]}${q.did ? ` → ${q.did}` : ''}`)
+        queue = []
+        page = undefined
+        return { step: failed, detail: r.detail }
+      }
+      for (const q of queue) log.push(`✓ ${all[q.step]}${q.did ? ` → ${q.did}` : ''}`)
+      queue = []
+      return undefined
+    }
+    for (const [i, text] of all.entries()) {
+      const step = parseStep(text)
+      const lastStep = i === all.length - 1
+      let items: Item[]
+      let did = ''
+      let changes = true
+      if (step.kind === 'enter') {
+        items = [paint(tab), { name: 'computer', input: { tabId: tab, action: 'key', text: 'Enter', action_summary: 'Presses Enter' } }]
+      } else if (step.kind === 'wait') {
+        items = [{ name: 'computer', input: { tabId: tab, action: 'wait', duration: 1 } }]
+      } else if (step.kind === 'scroll_down' || step.kind === 'scroll_up') {
+        const direction = step.kind === 'scroll_down' ? 'down' : 'up'
+        items = [{ name: 'computer', input: { tabId: tab, action: 'scroll', coordinate: [600, 400], scroll_direction: direction } }]
+      } else {
+        // With actions queued the page is not yet up to date: one try on it, and on a miss run
+        // the queue and ground again with the retries (a typed search can add suggestions).
+        let g = queue.length && page
+          ? await guarded($, cfg, async () => ({ el: await groundIn($, cfg, step, page!), page: page! }))
+          : await guarded($, cfg, () => groundSettled($, cfg, step, tab, page))
+        if (!g.ok && queue.length) {
+          const f = await flush(false)
+          if (f) return failAt(f.step, f.detail)
+          g = await guarded($, cfg, () => groundSettled($, cfg, step, tab, page))
         }
-        if (step.kind === 'wait') return void (await chrome($, 'computer', { tabId: tab, action: 'wait', duration: 1 }))
-        if (step.kind === 'scroll_down' || step.kind === 'scroll_up') {
-          const direction = step.kind === 'scroll_down' ? 'down' : 'up'
-          return void (await chrome($, 'computer', { tabId: tab, action: 'scroll', coordinate: [600, 400], scroll_direction: direction }))
+        if (!g.ok) {
+          const f = await flush(true)
+          return failAt(f ? f.step : i, f ? f.detail : g.detail)
         }
-        const el = await groundSettled($, cfg, step, tab)
+        const el = g.value.el
+        page = g.value.page
+        did = `${el.label} [${el.ref}]`
+        changes = false
         if (el.kind === 'click' && TOGGLES.has(el.role)) {
           // form_input sets the state, so "tick X" never unticks a box that is already ticked.
           const ticked = !OFF.test(step.text)
-          await chrome($, 'form_input', { tabId: tab, ref: el.ref, value: ticked, action_summary: `${ticked ? 'Ticks' : 'Unticks'} "${el.label}"` })
+          items = [{ name: 'form_input', input: { tabId: tab, ref: el.ref, value: ticked, action_summary: `${ticked ? 'Ticks' : 'Unticks'} "${el.label}"` } }]
         } else if (el.kind === 'click') {
-          await prepareClick($, tab)
-          await chrome($, 'computer', { tabId: tab, action: 'left_click', ref: el.ref, action_summary: `Clicks "${el.label}"` })
-        } else if (el.kind === 'fill') {
-          // A script-driven box (GOV.UK, Wikipedia search) keeps its own copy of the text: a value
+          items = [paint(tab), { name: 'computer', input: { tabId: tab, action: 'left_click', ref: el.ref, action_summary: `Clicks "${el.label}"` } }]
+          changes = true
+        } else if (el.kind === 'fill' && SEARCHY(el)) {
+          // A script-driven search box (GOV.UK, Wikipedia) keeps its own copy of the text: a value
           // set by form_input was dropped on submit and the search ran empty. Keystrokes are seen.
+          // Only search boxes: on a name or email field 1Password's menu took the keystrokes
+          // ("Cannot access a chrome-extension:// URL"), and form_input works there.
           const value = step.value ?? ''
-          await prepareClick($, tab)
-          await chrome($, 'computer', { tabId: tab, action: 'triple_click', ref: el.ref, action_summary: `Selects the text in "${el.label}"` })
-          await chrome($, 'computer', { tabId: tab, action: 'type', text: value, action_summary: `Types "${value}" into "${el.label}"` })
+          items = [
+            paint(tab),
+            { name: 'computer', input: { tabId: tab, action: 'triple_click', ref: el.ref, action_summary: `Selects the text in "${el.label}"` } },
+            { name: 'computer', input: { tabId: tab, action: 'type', text: value, action_summary: `Types "${value}" into "${el.label}"` } },
+          ]
         } else {
           const value = el.kind === 'select' ? el.value! : step.value ?? ''
-          await chrome($, 'form_input', { tabId: tab, ref: el.ref, value, action_summary: `Sets "${el.label.split(' → ')[0]}" to "${value}"` })
+          items = [{ name: 'form_input', input: { tabId: tab, ref: el.ref, value, action_summary: `Sets "${el.label.split(' → ')[0]}" to "${value}"` } }]
         }
-        await $.clock.sleep(SETTLE_MS)
-        return `${el.label} [${el.ref}]`
-      })
-      if (!r.ok) {
-        log.push(`✗ ${text}: not done (${r.detail}).`)
-        const rest = (steps as string[]).slice(i + 1)
-        if (rest.length) log.push(`Not run: ${rest.map(x => JSON.stringify(x)).join(', ')}.`)
-        log.push(`Continue with the normal claude-in-chrome tools from this step (tab ${tab}).`)
-        const now = await pageNow($, tab)
-        if (now) log.push(now)
-        return { result: log.join('\n') }
       }
-      log.push(`✓ ${text}${r.value ? ` → ${r.value}` : ''}`)
+      queue.push({ step: i, items, did })
+      if (changes || lastStep) {
+        const f = await flush(lastStep)
+        if (f) return failAt(f.step, f.detail)
+      }
     }
     log.push(`All steps done in tab ${tab}.`)
-    const now = await pageNow($, tab)
-    if (now) log.push(now)
+    tick('steps-total', startedAt)
+    const expectAt = Date.now()
     if (typeof input.expect === 'string') {
-      // A click or Enter can start a navigation that outlasts SETTLE_MS (Wikipedia search did):
-      // wait, and ask once more before a "no" or "unsure" goes back to Claude.
-      await $.clock.sleep(EXPECT_WAIT_MS[0]!)
+      // A click or Enter can start a navigation that outlasts the batch (Wikipedia search
+      // did): a "no" or "unsure" gets one more look before it goes back to Claude.
       let verdict = await checkPage($, cfg, tab, input.expect)
       if (!verdict.startsWith('yes')) {
-        await $.clock.sleep(EXPECT_WAIT_MS[1]!)
+        await pause($, EXPECT_RETRY_MS)
         verdict = await checkPage($, cfg, tab, input.expect)
       }
       log.push(`Check "${input.expect}": ${verdict}`)
     }
+    tick('expect', expectAt)
+    const now = await pageNow($, tab)
+    if (now) log.push(now)
+    logTiming($, (steps as string[]).length, startedAt)
     return { result: log.join('\n') }
   })
 

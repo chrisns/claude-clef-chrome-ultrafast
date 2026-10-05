@@ -19,6 +19,7 @@ export type Client = {
   timeoutMs: number
   keepAlive?: string // Ollama keep_alive, so the model stays loaded between browser steps
   embedModel?: string // e.g. nomic-embed-text: ranks a large page before the decision model sees it
+  embedCache?: Map<string, number[]> // label text -> vector, kept between steps
   post: Post
   calls?: { questions: number; ms: number; inputTokens?: number }[]
 }
@@ -113,12 +114,22 @@ export function margin(answer: ChoiceAnswer): number {
 export async function embed(client: Client, query: string, docs: string[]): Promise<number[][] | undefined> {
   if (!client.embedModel) return undefined
   const url = client.url.replace(/\/v1\/systemone$/, '/api/embed')
-  const input = [`search_query: ${query}`, ...docs.map(d => `search_document: ${d}`)]
+  const cache = client.embedCache
+  const missing = [...new Set(docs.filter(d => !cache?.has(d)))]
+  const input = [`search_query: ${query}`, ...missing.map(d => `search_document: ${d}`)]
   try {
     const res = await client.post(url, JSON.stringify({ model: client.embedModel, input, keep_alive: client.keepAlive }), client.timeoutMs)
     if (res.status !== 200) return undefined
     const vectors = (JSON.parse(res.text) as { embeddings?: number[][] }).embeddings
-    return vectors?.length === input.length ? vectors : undefined
+    if (vectors?.length !== input.length) return undefined
+    const fresh = new Map(missing.map((d, i) => [d, vectors[i + 1]!]))
+    if (cache) {
+      if (cache.size > 5000) cache.clear()
+      for (const [d, v] of fresh) cache.set(d, v)
+    }
+    const out = docs.map(d => fresh.get(d) ?? cache?.get(d))
+    if (out.some(v => !v)) return undefined
+    return [vectors[0]!, ...(out as number[][])]
   } catch {
     return undefined
   }

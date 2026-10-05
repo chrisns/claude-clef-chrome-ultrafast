@@ -70,20 +70,41 @@ function ollama(s: Scenario) {
 function browser(on: Parameters<Parameters<typeof test>[1] extends never ? never : any>[1], opts: { readPageError?: boolean; tree?: string } = {}) {
   const actions: Record<string, unknown>[] = []
   let realFinds = 0
-  on('tool.call', { tool: 'mcp__claude-in-chrome__read_page' }, () =>
-    opts.readPageError ? { isError: true, result: 'tab closed', text: 'tab closed' } : { result: { content: [{ type: 'text', text: opts.tree ?? SIGNUP }], isError: false } },
-  )
-  on('tool.call', { tool: 'mcp__claude-in-chrome__find' }, () => {
-    realFinds++
-    return { result: { content: [{ type: 'text', text: REAL_FIND }], isError: false } }
-  })
-  for (const t of ['computer', 'form_input', 'get_page_text'] as const) {
+  let batches = 0
+  // One answer per tool, used by the single-tool calls and by browser_batch alike.
+  const answer = (tool: string, e: Record<string, unknown>): { text: string; error?: boolean } => {
+    if (tool === 'read_page') return opts.readPageError ? { text: 'tab closed', error: true } : { text: opts.tree ?? SIGNUP }
+    if (tool === 'find') {
+      realFinds++
+      return { text: REAL_FIND }
+    }
+    if (tool === 'navigate') return { text: `Navigated to ${String(e.url)}` }
+    // the settle waits are not actions on the page
+    if (!(tool === 'computer' && e.action === 'wait')) actions.push({ ...e, tool })
+    return { text: tool === 'get_page_text' ? 'Thanks, Ada Lovelace. You will get the weekly edition.' : 'ok' }
+  }
+  for (const t of ['read_page', 'find', 'navigate', 'computer', 'form_input', 'get_page_text'] as const) {
     on('tool.call', { tool: `mcp__claude-in-chrome__${t}` }, (_$: unknown, e: Record<string, unknown>) => {
-      actions.push({ ...e, tool: t })
-      return { result: { content: [{ type: 'text', text: t === 'get_page_text' ? 'Thanks, Ada Lovelace. You will get the weekly edition.' : 'ok' }], isError: false } }
+      const a = answer(t, e)
+      return a.error ? { isError: true, result: a.text, text: a.text } : { result: { content: [{ type: 'text', text: a.text }], isError: false } }
     })
   }
-  return { actions, realFinds: () => realFinds }
+  // browser_batch as the extension answers it: one "[tool(:action)] output" block per item,
+  // and an error that names the failed item.
+  on('tool.call', { tool: 'mcp__claude-in-chrome__browser_batch' }, (_$: unknown, e: { actions: { name: string; input: Record<string, unknown> }[] }) => {
+    batches++
+    const blocks: { type: string; text: string }[] = []
+    for (const [n, item] of e.actions.entries()) {
+      const a = answer(item.name, item.input)
+      if (a.error) {
+        const text = `actions[${n}] (${item.name}) failed: ${a.text}`
+        return { isError: true, result: text, text }
+      }
+      blocks.push({ type: 'text', text: `[${item.name}${item.input.action ? `:${String(item.input.action)}` : ''}] ${a.text}` })
+    }
+    return { result: { content: blocks, isError: false } }
+  })
+  return { actions, realFinds: () => realFinds, batches: () => batches }
 }
 
 const ACTIVE = { options: { mode: 'active' } }
@@ -221,15 +242,29 @@ describe('browse', () => {
     await start($, on)
     const r = await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['type "Ada" into the name field', "select 'weekly' for how often", 'tick "I agree to the terms"', 'press enter'] } as never))
     expect(b.actions.map(a => [a.tool, a.ref ?? a.text, a.value])).toEqual([
-      ['computer', undefined, undefined], // the tiny screenshot that makes the tab draw a frame
-      ['computer', 'ref_13', undefined], // triple_click selects the field's text
-      ['computer', 'Ada', undefined], // then real keystrokes
+      ['form_input', 'ref_13', 'Ada'], // a plain text field: form_input (1Password takes keystrokes)
       ['form_input', 'ref_15', 'weekly'],
       ['form_input', 'ref_16', true],
       ['computer', undefined, undefined],
       ['computer', 'Enter', undefined],
     ])
     expect(textOf(r)).toContain('All steps done')
+    // one batch reads the page; the fill, select and tick wait in the queue and go with Enter
+    expect(b.batches()).toBe(2)
+  })
+
+  test('types real keystrokes into a search box', ACTIVE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    const b = browser(on, { tree: 'main [ref_1]\n search [ref_2]\n  searchbox "Search Wikipedia" [ref_3] type="search"\n  button "Search" [ref_4]' })
+    on('http.fetch', ollama({ pick: 'Search Wikipedia' }).hook)
+    await start($, on)
+    await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['type "Gödel" into the search box'] } as never))
+    expect(b.actions.map(a => [a.tool, a.action, a.ref ?? a.text])).toEqual([
+      ['computer', 'screenshot', undefined], // the tiny screenshot that makes the tab draw a frame
+      ['computer', 'triple_click', 'ref_3'],
+      ['computer', 'type', 'Gödel'],
+    ])
   })
 
   test('stops at the first unsure step and hands the rest back to Claude', ACTIVE, async ($, on) => {

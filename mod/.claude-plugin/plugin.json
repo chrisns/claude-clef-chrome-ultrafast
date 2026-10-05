@@ -9,8 +9,10 @@
     "embed_model": { "title": "Embedding model", "type": "string", "default": "nomic-embed-text", "description": "Ranks a large page before the decision model sees it. Empty turns the prefilter off." },
     "ollama_url": { "title": "systemone URL", "type": "string", "default": "http://localhost:11434/v1/systemone", "description": "Ollama's /v1/systemone endpoint." },
     "gate": { "title": "Gate threshold", "type": "number", "default": 0.5, "description": "Below this yes/no score the decision goes back to Claude." },
+    "skip_gate_at": { "title": "Skip the gate at", "type": "number", "default": 0.95, "description": "A choice at least this sure needs no yes/no gate. 1 always gates." },
     "min_margin": { "title": "Minimum margin", "type": "number", "default": 0.15, "description": "Two candidates closer than this go back to Claude." },
     "timeout_ms": { "title": "Timeout (ms)", "type": "number", "default": 8000, "description": "A local request slower than this goes back to Claude." },
+    "settle_ms": { "title": "Settle wait (ms)", "type": "number", "default": 0, "description": "An extra wait after each batch of browser actions, before the page is read." },
     "browse": { "title": "Offer the browse tool", "type": "boolean", "default": true, "description": "browse(steps): run several plain steps locally in one Claude turn." },
     "find": { "title": "Answer find locally", "type": "boolean", "default": true, "description": "Answer claude-in-chrome find with the local model." },
     "check": { "title": "Offer the check tool", "type": "boolean", "default": true, "description": "check(question): a local yes/no about the page." }

@@ -19,7 +19,7 @@ export type StepKind = Kind | 'any' | 'enter' | 'scroll_down' | 'scroll_up' | 'w
 export type Step = { text: string; kind: StepKind; value?: string }
 
 export type Strategy = 'gate1' | 'none+gate1'
-export type Tuning = { gate: number; minMargin: number; strategy: Strategy }
+export type Tuning = { gate: number; minMargin: number; strategy: Strategy; skipGateAt?: number }
 export const DEFAULT_TUNING: Tuning = { gate: 0.5, minMargin: 0.15, strategy: 'none+gate1' }
 const NONE = '__none__'
 
@@ -194,6 +194,12 @@ export async function ground(client: Client, step: Step, elements: Element[], tu
   if (top[0] === NONE) throw new Fallback('low-gate', `"none of these" p=${top[1].toFixed(2)}`)
   const rest = ranked.filter(([id]) => id !== NONE)
   const runnerUp = second && second[0] !== NONE ? second : rest[1]
+  // A very sure choice needs no yes/no gate (~0.5 s saved); bench/ground.ts --negative decides
+  // the threshold, as a wrong pick here is a wrong click.
+  if (tuning.skipGateAt !== undefined && top[1] >= tuning.skipGateAt && (!runnerUp || top[1] - runnerUp[1] >= tuning.minMargin)) {
+    const el = byId.get(top[0])!
+    return { element: el, gate: top[1], rounds, finalists: [{ element: el, gate: top[1] }] }
+  }
 
   const gateOf = async (ids: string[]) => {
     const qs: Record<string, Question> = {}

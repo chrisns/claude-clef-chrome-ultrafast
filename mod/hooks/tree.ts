@@ -14,6 +14,7 @@ export type Element = {
   kind: Kind
   value?: string // the option text for a select
   hint?: string // e.g. "submit": what a bare name does not say
+  inputType?: string // the type="..." attribute: "search", "email", "text", ...
 }
 
 type Line = { depth: number; role: string; name: string; ref?: string; rest: string }
@@ -89,12 +90,13 @@ export function parse(text: string): Element[] {
         )
         return
       }
-      out.push({ id: line.ref, ref: line.ref, role: 'combobox', label: name, kind: 'fill' })
+      out.push({ id: line.ref, ref: line.ref, role: 'combobox', label: name, kind: 'fill', inputType: /\btype="(\w+)"/.exec(line.rest)?.[1] ?? 'combobox' })
       return
     }
     // "click the submit button" needs to know that "Subscribe" submits the form.
     const hint = /\btype="submit"/.test(line.rest) ? { hint: 'submit' } : {}
-    if (FILL.has(line.role)) out.push({ id: line.ref, ref: line.ref, role: line.role, label: name, kind: 'fill' })
+    const inputType = /\btype="(\w+)"/.exec(line.rest)?.[1]
+    if (FILL.has(line.role)) out.push({ id: line.ref, ref: line.ref, role: line.role, label: name, kind: 'fill', ...(inputType ? { inputType } : {}) })
     else if (CLICK.has(line.role) && name) out.push({ id: line.ref, ref: line.ref, role: line.role, label: name, kind: 'click', ...hint })
   })
   return out
