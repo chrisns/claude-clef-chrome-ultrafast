@@ -6,6 +6,7 @@
 
 import { ask, type Client, type ChoiceAnswer, cosine, embed, Fallback, type Question } from './systemone.ts'
 import type { Element, Kind } from './tree.ts'
+import { ADDRESSES_MODEL } from './safety.ts'
 
 export const MATCH_QUESTION = 'Which page element does this step refer to?'
 export const GATE_QUESTION = "Would using the element '{element}' carry out this instruction?"
@@ -95,6 +96,9 @@ export function poolFor(elements: Element[], step: Step): Element[] {
           : new Set(['click'])
   return elements.filter(e => {
     if (!kinds.has(e.kind)) return false
+    // A name that talks to the model is an injection attempt, not an element to pick: 18 of 108
+    // such decoys won when the right element was absent (bench/inject.ts B).
+    if (ADDRESSES_MODEL.test(e.label)) return false
     if (e.kind === 'click' && e.label.startsWith('Open ') && ['textbox', 'searchbox', 'spinbutton'].includes(e.role)) return false
     if (step.value !== undefined && step.kind !== 'fill' && !named(e, step.value)) return false
     return true
