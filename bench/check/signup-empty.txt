@@ -1,0 +1,19 @@
+Title: Newsletter
+URL: http://127.0.0.1:8791/signup.html
+Source element: <main>
+---
+Join our newsletter
+
+Full name
+
+Email address
+
+How often
+Choose…
+daily
+weekly
+monthly
+
+I agree to the terms
+
+Subscribe Clear

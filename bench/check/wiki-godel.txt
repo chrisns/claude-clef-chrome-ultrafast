@@ -1,0 +1,30 @@
+Title: Gödel's incompleteness theorems - Wikipedia
+URL: https://en.wikipedia.org/wiki/G%C3%B6del%27s_incompleteness_theorems
+---
+Jump to content
+Main menu
+Search
+Donate
+Create account
+Log in
+Contents hide
+(Top)
+Formal systems
+First incompleteness theorem
+Second incompleteness theorem
+Examples of undecidable statements
+Relationship with computability
+Proof sketch for the first theorem
+Proof sketch for the second theorem
+Discussion and implications
+History
+See also
+References
+External links
+Gödel's incompleteness theorems
+55 languages
+Article
+Talk
+Read
+Edit
+View history

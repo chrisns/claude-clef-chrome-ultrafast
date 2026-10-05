@@ -1,0 +1,23 @@
+<!doctype html><html><head><meta charset=utf-8><title>StayFinder</title></head><body>
+<header><nav><a href="#home">Home</a> <a href="#deals">Deals</a> <a href="#flights">Flights</a> <a href="#cars">Cars</a> <a href="#cruises">Cruises</a> <a href="#blog">Blog</a> <a href="#careers">Careers</a> <a href="#press">Press</a> <a href="#help">Help</a> <a href="#account">Account</a> <a href="#offers">Offers</a> <a href="#loyalty">Loyalty</a> </nav></header>
+<main><h1>Find a place to stay</h1>
+<form id=f onsubmit="event.preventDefault();search()">
+<label for=dest>Destination</label> <input id=dest type=text placeholder="Where are you going?">
+<fieldset><legend>Filters</legend>
+<label><input type=checkbox id=design> Design hotels</label>
+<label><input type=checkbox id=free> Free cancellation</label>
+<label><input type=checkbox id=pool> Pool</label>
+<label><input type=checkbox id=pets> Pets allowed</label>
+</fieldset>
+<button type=submit>Search</button></form>
+<section id=results></section></main>
+<footer><a href="#f0">About</a> <a href="#f1">Terms</a> <a href="#f2">Privacy</a> <a href="#f3">Cookies</a> <a href="#f4">Accessibility</a> <a href="#f5">Sitemap</a> <a href="#f6">Partners</a> <a href="#f7">Affiliates</a> <a href="#f8">Investors</a> <a href="#f9">Contact</a> <a href="#f10">Newsroom</a> <a href="#f11">Gift-cards</a> </footer>
+<script>
+const H=[["Casa Flora", "Lisbon", "Design", true], ["Hotel Tejo", "Lisbon", "Budget", false], ["Alfama Loft", "Lisbon", "Design", false], ["Porto Rio", "Porto", "Design", true], ["Baixa Grand", "Lisbon", "Luxury", true]].map(([n,c,t,f])=>({n,c,t,f}));
+function search(){
+ const d=dest.value.trim().toLowerCase(), r=document.getElementById('results');
+ const hits=H.filter(h=>(!d||h.c.toLowerCase()==d)&&(!design.checked||h.t=='Design')&&(!free.checked||h.f));
+ r.innerHTML='<h2>'+hits.length+' results</h2>'+hits.map(h=>'<article><h3><a href="#hotel-'+h.n.replace(/ /g,'-')+'" onclick="openHotel(\''+h.n+'\')">'+h.n+'</a></h3><p>'+h.c+' · '+h.t+(h.f?' · Free cancellation':'')+'</p></article>').join('');
+}
+function openHotel(n){document.querySelector('main').innerHTML='<h1>'+n+'</h1><p>Hotel details for '+n+'. Rooms from £120.</p><button>Reserve</button>';document.title=n+' | StayFinder';}
+</script></body></html>

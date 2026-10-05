@@ -1,0 +1,18 @@
+{
+  "name": "clef-chrome",
+  "version": "0.1.0",
+  "description": "Moves small Claude-in-Chrome decisions (which element, did it work) to a local Ollama decision model; falls back to Claude whenever it is unsure.",
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "mode": { "title": "Mode", "type": "string", "options": ["off", "shadow", "active"], "default": "shadow", "description": "shadow: Claude's tools run as normal and the local answer is only logged. active: the local answer is used when it is confident." },
+    "model": { "title": "Decision model", "type": "string", "default": "clef-flash", "description": "An Ollama model with the decision capability." },
+    "embed_model": { "title": "Embedding model", "type": "string", "default": "nomic-embed-text", "description": "Ranks a large page before the decision model sees it. Empty turns the prefilter off." },
+    "ollama_url": { "title": "systemone URL", "type": "string", "default": "http://localhost:11434/v1/systemone", "description": "Ollama's /v1/systemone endpoint." },
+    "gate": { "title": "Gate threshold", "type": "number", "default": 0.5, "description": "Below this yes/no score the decision goes back to Claude." },
+    "min_margin": { "title": "Minimum margin", "type": "number", "default": 0.15, "description": "Two candidates closer than this go back to Claude." },
+    "timeout_ms": { "title": "Timeout (ms)", "type": "number", "default": 8000, "description": "A local request slower than this goes back to Claude." },
+    "browse": { "title": "Offer the browse tool", "type": "boolean", "default": true, "description": "browse(steps): run several plain steps locally in one Claude turn." },
+    "find": { "title": "Answer find locally", "type": "boolean", "default": true, "description": "Answer claude-in-chrome find with the local model." },
+    "check": { "title": "Offer the check tool", "type": "boolean", "default": true, "description": "check(question): a local yes/no about the page." }
+  }
+}

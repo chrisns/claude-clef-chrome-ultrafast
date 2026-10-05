@@ -1,0 +1,7 @@
+Title: Subscribed
+URL: http://127.0.0.1:8791/signup.html
+Source element: <main>
+---
+Thanks, Ada Lovelace!
+
+We sent a confirmation to ada@example.com for the weekly edition.

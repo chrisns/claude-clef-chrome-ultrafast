@@ -1,0 +1,9 @@
+Title: StayFinder
+URL: http://127.0.0.1:8791/hotels.html
+Source element: <main>
+---
+Find a place to stay
+Destination
+Filters
+Design hotels Free cancellation Pool Pets allowed
+Search

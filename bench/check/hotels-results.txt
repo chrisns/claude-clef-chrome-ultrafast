@@ -1,0 +1,7 @@
+Title: StayFinder
+URL: http://127.0.0.1:8791/hotels.html
+Source element: <article>
+---
+Baixa Grand
+
+Lisbon · Luxury · Free cancellation

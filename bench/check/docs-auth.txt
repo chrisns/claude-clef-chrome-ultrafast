@@ -1,0 +1,7 @@
+Title: Authentication | Acme Docs
+URL: http://127.0.0.1:8791/docs.html#Authentication
+Source element: <main>
+---
+Authentication
+
+This page explains authentication for the Acme API.

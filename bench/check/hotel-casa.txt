@@ -1,0 +1,9 @@
+Title: Casa Flora | StayFinder
+URL: http://127.0.0.1:8791/hotels.html#hotel-Casa-Flora
+Source element: <main>
+---
+Casa Flora
+
+Hotel details for Casa Flora. Rooms from £120.
+
+Reserve

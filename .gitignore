@@ -1,0 +1,5 @@
+node_modules/
+bench/results/*.json
+mod/.claude-plugin/types/
+.DS_Store
+bench/results/debug-*.txt
