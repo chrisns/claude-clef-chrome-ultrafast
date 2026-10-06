@@ -267,6 +267,8 @@ async function bridgeTool($: $, tool: string, args: Record<string, unknown>): Pr
 // The session's permission mode, from the classic hooks (a tool.call input does not carry it).
 // It can change during a session (Shift+Tab), so it is read again at each prompt.
 let permissionMode: string | undefined
+// Whether Claude was last told that browse cannot run in this mode (see classic.UserPromptSubmit).
+let toldNoBrowse = false
 
 // Fail closed. A rule that denies: never. A rule that allows: yes. No rule ("ask"): only where
 // no person would be asked anyway, auto (the classifier would decide; clef-flash's routine
@@ -467,9 +469,20 @@ export const register: Register = (on, options) => {
     permissionMode = (e as { permission_mode?: string }).permission_mode ?? permissionMode
     return next(e)
   })
-  on('classic.UserPromptSubmit', ($, e, next) => {
+  // In auto mode Claude Code's classifier refuses the browser actions the review route sends (no
+  // verdict for a plugin's call), so browse would only hand back. The system prompt cannot say so:
+  // the engine renders it before this hook gives the mode. Tell Claude here, once per change.
+  on('classic.UserPromptSubmit', async ($, e, next) => {
     permissionMode = (e as { permission_mode?: string }).permission_mode ?? permissionMode
-    return next(e)
+    const out = await next(e)
+    if (cfg.mode !== 'active' || !feature('browse')) return out
+    const noBrowse = permissionMode === 'auto' && cfg.route === 'review'
+    if (noBrowse === toldNoBrowse) return out
+    toldNoBrowse = noBrowse
+    const note = noBrowse
+      ? `clef-chrome: auto mode refuses the browser actions of ${BROWSE} (route "review"). Do not call it now; use the claude-in-chrome tools.`
+      : `clef-chrome: ${BROWSE} works again in this permission mode.`
+    return { ...out, additionalContext: [...(out.additionalContext ?? []), note] }
   })
 
   on('session.start', async ($, e, next) => {
@@ -525,9 +538,6 @@ export const register: Register = (on, options) => {
   on('prompt.compose', async ($, e, next) => {
     const out = await next(e)
     if (cfg.mode !== 'active' || !e.tools.includes(BROWSE)) return out
-    // In auto mode Claude Code's classifier refuses the browser actions the review route sends
-    // (no verdict for a plugin's call), so browse would only hand back: do not push it there.
-    if (permissionMode === 'auto' && cfg.route === 'review') return out
     return {
       sections: [
         ...out.sections,

@@ -329,6 +329,23 @@ test('browse hands back on input it cannot read', ACTIVE, async ($, on) => {
   expect(b.actions.length).toBe(0)
 })
 
+describe('auto mode on the review route', () => {
+  test('tells Claude once not to call browse, and once when it works again', ACTIVE, async ($, on) => {
+    mock.store(on)
+    mock.clock(on)
+    on('http.fetch', ollama({}).hook)
+    on('classic.UserPromptSubmit', () => ({}))
+    await start($, on)
+    const notes = async (mode: string) =>
+      ((await $.classic.UserPromptSubmit({ prompt: 'p', permission_mode: mode } as never)) as { additionalContext?: string[] })
+        .additionalContext ?? []
+    expect((await notes('auto')).join()).toContain('Do not call it now')
+    expect(await notes('auto')).toEqual([])
+    expect((await notes('default')).join()).toContain('works again')
+    expect(await notes('bypassPermissions')).toEqual([])
+  })
+})
+
 describe('browse over the local bridge', () => {
   const BRIDGE = { options: { mode: 'active', route: 'bridge' } }
   // call.py, faked: answers each tool as the extension would and records what went over it.
@@ -378,7 +395,7 @@ describe('browse over the local bridge', () => {
     on('http.fetch', ollama({ pick: 'Subscribe', gate: 0.97 }).hook)
     await start($, on)
     const r = await drive(clock, go($, ['click "Subscribe"']))
-    expect(textOf(r)).not.toContain('over the local')
+    expect(textOf(r as never)).not.toContain('over the local')
     expect(viaBridge.length).toBe(0)
     void b
   })
@@ -392,7 +409,7 @@ describe('browse over the local bridge', () => {
     await start($, on)
     // "Subscribe" carries a risk word: the bridge must not run it
     const r = await drive(clock, go($, ['click the form button']))
-    const text = textOf(r)
+    const text = textOf(r as never)
     expect(text).toContain('Over the Comet bridge: click the form button: not done')
     expect(text).toContain('Ran all the steps again on the reviewed claude-in-chrome tools')
   })
@@ -468,7 +485,7 @@ describe('check', () => {
     mock.clock(on)
     browser(on)
     let gate = 0.6
-    on('http.fetch', async (_$: unknown, e: never) => (gate < 0 ? ollama({ status: 500 }) : ollama({ gate })).hook(_$, e))
+    on('http.fetch', async (_$: unknown, e: any) => (gate < 0 ? ollama({ status: 500 }) : ollama({ gate })).hook(_$, e))
     await start($, on)
     const ask = () => $.tool.call({ tool: 'mcp__clef-chrome__check', tabId: TAB, question: 'Was the form sent?' } as never)
     expect(textOf(await ask())).toMatch(/^unsure/)

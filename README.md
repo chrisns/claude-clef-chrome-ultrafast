@@ -57,7 +57,9 @@ Every browser action goes through Claude Code's own permission review, as Claude
 
 - **`bypassPermissions`:** it works, as benchmarked.
 - **default mode:** you are asked to approve each browser action.
-- **auto mode: it does not work.** Claude Code's auto-mode classifier gives no verdict for a browser action that a plugin starts, so the action is refused. `browse` then hands back within milliseconds, and Claude does the job with its own tools. In this case, the mod does not suggest `browse` in Claude's system prompt.
+- **auto mode: it does not work.** Claude Code's auto-mode classifier gives no verdict for a browser action that a plugin starts, so the action is refused. When the mode changes to auto, the mod adds a note to your next prompt. The note tells Claude not to call `browse`. Claude then does the job with the claude-in-chrome tools, at plain-Claude speed. When the mode changes back, a second note tells Claude that `browse` works again.
+
+Why a note, and not a change to the system prompt: the engine renders the system prompt before a hook gets the permission mode.
 
 ### `bridge`
 
