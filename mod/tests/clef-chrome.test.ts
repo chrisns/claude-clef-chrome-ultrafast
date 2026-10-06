@@ -277,6 +277,18 @@ describe('browse', () => {
     expect(textOf(r)).toContain('All steps done')
   })
 
+  test('an "if" step with no match is skipped and the run goes on', ACTIVE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    browser(on)
+    on('http.fetch', ollama({ pick: 'None of these', gate: 0.97 }).hook) // the model says: none of these
+    await start($, on)
+    const r = await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', tabId: TAB, steps: ['open the results page if one is shown', 'click "Clear"'] } as never))
+    const text = textOf(r)
+    expect(text).toContain('↷ open the results page if one is shown: skipped')
+    expect(text).toContain('All steps done')
+  })
+
   test('types real keystrokes into a search box', ACTIVE, async ($, on) => {
     mock.store(on)
     const clock = mock.clock(on)
@@ -369,6 +381,20 @@ describe('browse over the local bridge', () => {
     expect(textOf(r)).not.toContain('over the local')
     expect(viaBridge.length).toBe(0)
     void b
+  })
+
+  test('a bridge run that stops runs again on the reviewed tools', BRIDGE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    browser(on)
+    bridgeWorld(on, 'allow')
+    on('http.fetch', ollama({ pick: 'Subscribe', gate: 0.97 }).hook)
+    await start($, on)
+    // "Subscribe" carries a risk word: the bridge must not run it
+    const r = await drive(clock, go($, ['click the form button']))
+    const text = textOf(r)
+    expect(text).toContain('Over the Comet bridge: click the form button: not done')
+    expect(text).toContain('Ran all the steps again on the reviewed claude-in-chrome tools')
   })
 
   test('fails closed: only allow, or ask where nobody would be asked', async () => {

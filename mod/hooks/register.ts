@@ -548,6 +548,7 @@ export const register: Register = (on, options) => {
     if (!valid) {
       return { result: 'browse needs { steps: string[] } and a tabId or a url. Nothing was done; use the normal claude-in-chrome tools.' }
     }
+    const run = async (allowBridge: boolean): Promise<{ result: string; bridgeStopped?: boolean }> => {
     const log: string[] = []
     const startedAt = Date.now()
     timing = {}
@@ -555,7 +556,7 @@ export const register: Register = (on, options) => {
     let page: Page | undefined
     // Over the local bridge only when the whole browse reads as routine and the mode allows it;
     // a tabId from Claude's own group can only be reached with Claude's tools.
-    const bridged = typeof input.url === 'string' && tabId === undefined && (await bridgeable($, cfg, input.url, steps as string[]))
+    const bridged = allowBridge && typeof input.url === 'string' && tabId === undefined && (await bridgeable($, cfg, input.url, steps as string[]))
     via = bridged ? { browser: cfg.bridgeBrowser } : undefined
     try {
     if (typeof input.url === 'string') {
@@ -587,7 +588,7 @@ export const register: Register = (on, options) => {
         page = pageOf(interactive, all)
         return id
       })
-      if (!r.ok) return { result: `✗ open ${url}: not done (${r.detail}). Use the normal claude-in-chrome tools.` }
+      if (!r.ok) return { result: `✗ open ${url}: not done (${r.detail}). Use the normal claude-in-chrome tools.`, bridgeStopped: bridged }
       tabId = r.value
       log.push(`✓ opened ${url} in tab ${tabId}${bridged ? ` (${cfg.bridgeBrowser}, over the local bridge)` : ''}`)
     }
@@ -614,7 +615,7 @@ export const register: Register = (on, options) => {
       }
       logTiming($, i + 1, startedAt)
       if (now) log.push(now)
-      return { result: log.join('\n') }
+      return { result: log.join('\n'), bridgeStopped: bridged }
     }
     // Run the queued actions, then read the page for the next step (not after the last one:
     // expect reads the page text itself). Resolves the failed step, if any.
@@ -692,6 +693,16 @@ export const register: Register = (on, options) => {
           g = await guarded($, cfg, () => groundSettled($, cfg, step, tab, page))
         }
         if (!g.ok) {
+          // A step that says "if ..." is optional: with no matching element it is skipped
+          // ("click X if a results page is shown", where Wikipedia went straight to the article).
+          if (/\bif\b/i.test(text) && ['no-elements', 'low-gate', 'low-margin'].includes(g.reason)) {
+            log.push(`↷ ${text}: skipped, no matching element (the condition did not hold)`)
+            if (lastStep) {
+              const f = await flush(true)
+              if (f) return failAt(f.step, f.detail)
+            }
+            continue
+          }
           const f = await flush(true)
           return failAt(f ? f.step : i, f ? f.detail : g.detail)
         }
@@ -767,6 +778,17 @@ export const register: Register = (on, options) => {
       // The bridge serves this browse only; check, find and the next browse decide again.
       via = undefined
     }
+    }
+
+    // A bridge run that stops does not go back to Claude: the same steps run again on the
+    // reviewed claude-in-chrome tools, in Claude's own tab group, so Claude can carry on there.
+    // Handing back from the bridge made Claude reopen the page (docs: 9 turns against 6).
+    // Repeating the bridge's actions is harmless: they were all routine.
+    const first = await run(true)
+    if (!first.bridgeStopped) return { result: first.result }
+    const why = first.result.split('\n').find(l => l.startsWith('✗'))?.slice(2) ?? 'it stopped'
+    const second = await run(false)
+    return { result: `Over the ${cfg.bridgeBrowser} bridge: ${why}\nRan all the steps again on the reviewed claude-in-chrome tools, in your own tab group:\n${second.result}` }
   })
 
   // check(question): a yes/no about the page text. Never a low-confidence yes or no.

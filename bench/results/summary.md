@@ -260,3 +260,22 @@ With Ollama restarted and `OLLAMA_NUM_PARALLEL=2`, warmed, M1 Max:
 | 3 | 1,046 ms | 830 ms | 1,781 ms | 1,822 ms |
 
 **Result:** the GPU is already busy with one request. Parallel requests saved about 0.2 s on two yes/no questions and nothing on a choice plus a yes/no. That is not worth the extra code, or the extra memory that each parallel slot takes. The setting was removed and Ollama was restarted.
+
+## 11. Three-way benchmark on a quiet machine (6 October 2026)
+
+Load average 4.9 to 12, with no other browser automation running. 5 jobs, 3 runs each, Opus 5.5, bypassPermissions. All 60 runs passed. Each cell is the median wall time / median Claude turns.
+
+| | hotels | signup | docs | wikipedia | govuk | Median per job | Mean per job | Turns | Cost, 15 runs |
+|---|---|---|---|---|---|---|---|---|---|
+| Plain Claude | 40 s / 8 | 28 s / 7 | 51 s / 10 | 41 s / 7 | 42 s / 7 | 41.0 s | 42.5 s | 8.1 | $2.76 |
+| clef + Claude Code's review | 20 s / 2 | 25 s / 3 | 34 s / 6 | 22 s / 2 | 24 s / 2 | 23.6 s | 25.6 s | 3.1 | $1.30 |
+| clef + Comet bridge (6feeae4) | 15 s / 2 | 23 s / 3 | 52 s / 9 | 39 s / 5 | 17 s / 2 | 22.2 s | 29.4 s | 4.1 | $1.07 |
+| clef + Comet bridge, with the fixes below | 15 s / 2 | 26 s / 3 | 59 s / 6 | 19 s / 2 | 16 s / 2 | 19.4 s | 28.2 s | 3.6 | $1.36 |
+
+**Fixes in the last row:**
+- **Optional steps.** A step with "if" in it is optional. With no matching element, `browse` skips it. Claude had written "click … if a results page is shown", and Wikipedia went straight to the article.
+- **Re-run after a bridge stop.** When a bridge run stops, `browse` runs the steps again on the reviewed tools in Claude's own tab group. Claude then does not have to reopen the page. This cut docs from 9 turns to 6, but the re-run costs time inside `browse`.
+
+**Notes:**
+- The costs include single cache-write runs of about $0.48–0.59.
+- Docs needs world knowledge ("API keys and tokens" means "Authentication"), so it always ends with Claude.

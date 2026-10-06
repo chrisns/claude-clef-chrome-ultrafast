@@ -1,0 +1,15 @@
+PASS hotels      38.6s (api 17.0s)  turns  7  in 414774 out 1109  $0.588  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4
+PASS hotels      40.2s (api 18.2s)  turns  8  in 471591 out 1124  $0.157  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4 computer×1
+PASS hotels      49.4s (api 20.6s)  turns  8  in 471985 out 1137  $0.149  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4 computer×1
+PASS signup      27.5s (api 11.4s)  turns  6  in 352272 out 835  $0.120  tabs_context_mcp×1 browser_batch×3 tabs_close_mcp×1
+PASS signup      28.1s (api 12.0s)  turns  7  in 354033 out 938  $0.115  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×3 tabs_close_mcp×1
+PASS signup      33.5s (api 14.3s)  turns  7  in 353998 out 890  $0.114  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×3 tabs_close_mcp×1
+PASS docs        37.9s (api 20.6s)  turns  9  in 529781 out 1115  $0.168  tabs_context_mcp×1 browser_batch×3 get_page_text×1 read_page×1 computer×1 javascript_tool×1
+PASS docs        68.3s (api 33.7s)  turns 14  in 853335 out 2064  $0.283  tabs_context_mcp×1 browser_batch×4 get_page_text×2 read_page×2 computer×2 javascript_tool×2
+PASS docs        51.1s (api 25.6s)  turns 10  in 591690 out 1500  $0.183  tabs_context_mcp×1 browser_batch×3 get_page_text×1 read_page×1 computer×1 javascript_tool×2
+PASS wikipedia   55.9s (api 19.3s)  turns  8  in 472167 out 1168  $0.165  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×5
+PASS wikipedia   41.0s (api 20.1s)  turns  7  in 412792 out 1139  $0.139  tabs_context_mcp×1 browser_batch×5
+PASS wikipedia   37.7s (api 18.8s)  turns  7  in 410361 out 977  $0.131  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4
+PASS govuk       44.7s (api 19.4s)  turns  9  in 534852 out 1139  $0.182  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×5 get_page_text×1
+PASS govuk       41.8s (api 16.7s)  turns  7  in 411172 out 1011  $0.133  tabs_context_mcp×1 tabs_create_mcp×1 browser_batch×4
+PASS govuk       41.4s (api 16.3s)  turns  7  in 410501 out 1030  $0.132  tabs_context_mcp×2 browser_batch×4
