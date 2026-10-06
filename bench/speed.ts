@@ -39,6 +39,7 @@ const arg = (k: string, d: string) => (process.argv.includes(k) ? process.argv[p
 const label = arg('--label', 'speed')
 const runs = Number(arg('--runs', '3'))
 const only = arg('--jobs', '').split(',').filter(Boolean)
+const perm = arg('--perm', 'bypassPermissions') // the session's permission mode
 const modDir = arg('--mod-dir', new URL('../mod', import.meta.url).pathname)
 const options: Record<string, unknown> = { mode: 'active' }
 // --allow <rule>: a permission allow rule for the headless session only (repeatable)
@@ -61,7 +62,7 @@ for (const [name, job] of Object.entries(JOBS).filter(([n]) => !only.length || o
     const r = spawnSync(
       'claude',
       ['-p', prompt, '--chrome', '--model', 'sonnet', '--output-format', 'json', '--tools', 'TodoWrite', '--setting-sources', '',
-        '--disable-slash-commands', '--no-session-persistence', '--permission-mode', 'bypassPermissions',
+        '--disable-slash-commands', '--no-session-persistence', '--permission-mode', perm,
         '--plugin-dir', modDir, '--settings', JSON.stringify({ pluginConfigs: { 'clef-chrome': { options } }, ...(allow.length ? { permissions: { allow } } : {}) }),
         '--debug-file', debug],
       { encoding: 'utf8', cwd: '/tmp', timeout: 300_000 },

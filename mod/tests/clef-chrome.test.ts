@@ -330,7 +330,7 @@ test('browse hands back on input it cannot read', ACTIVE, async ($, on) => {
 })
 
 describe('browse over the local bridge', () => {
-  const BRIDGE = { options: { mode: 'active', bridge: true } }
+  const BRIDGE = { options: { mode: 'active', route: 'bridge' } }
   // call.py, faked: answers each tool as the extension would and records what went over it.
   function bridgeWorld(on: any, decision: 'allow' | 'ask' | 'deny') {
     const viaBridge: string[] = []
@@ -395,6 +395,28 @@ describe('browse over the local bridge', () => {
     const text = textOf(r)
     expect(text).toContain('Over the Comet bridge: click the form button: not done')
     expect(text).toContain('Ran all the steps again on the reviewed claude-in-chrome tools')
+  })
+
+  test('a request can ask for the bridge when the setting is review', ACTIVE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    browser(on)
+    const viaBridge = bridgeWorld(on, 'allow')
+    on('http.fetch', ollama({ pick: 'Clear', gate: 0.97 }).hook)
+    await start($, on)
+    await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', url: 'http://127.0.0.1:8791/docs.html', steps: ['click "Clear"'], route: 'bridge' } as never))
+    expect(viaBridge).toContain('computer:left_click')
+  })
+
+  test('a request can ask for review when the setting is bridge', BRIDGE, async ($, on) => {
+    mock.store(on)
+    const clock = mock.clock(on)
+    browser(on)
+    const viaBridge = bridgeWorld(on, 'allow')
+    on('http.fetch', ollama({ pick: 'Clear', gate: 0.97 }).hook)
+    await start($, on)
+    await drive(clock, $.tool.call({ tool: 'mcp__clef-chrome__browse', url: 'http://127.0.0.1:8791/docs.html', steps: ['click "Clear"'], route: 'review' } as never))
+    expect(viaBridge.length).toBe(0)
   })
 
   test('fails closed: only allow, or ask where nobody would be asked', async () => {

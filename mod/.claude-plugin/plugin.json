@@ -63,11 +63,15 @@
       "default": 0,
       "description": "An extra wait after each batch of browser actions, before the page is read."
     },
-    "bridge": {
-      "title": "Use the local browser bridge",
-      "type": "boolean",
-      "default": false,
-      "description": "Run a browse whose page and steps all read as routine over the browser's local Claude in Chrome bridge: fast, with no per-action review by Claude Code (the extension's own site rules still apply). Fails closed to the normal tools: a deny rule, a mode that would ask you, a risky or uncertain step, or any error."
+    "route": {
+      "title": "Route",
+      "type": "string",
+      "options": [
+        "review",
+        "bridge"
+      ],
+      "default": "review",
+      "description": "review: every browser action is reviewed by Claude Code. bridge: a routine browse runs over the browser's local Claude in Chrome bridge, with clef-flash's sort as the review; risky or uncertain steps still go the review way. A browse call can ask for either."
     },
     "bridge_browser": {
       "title": "Bridge browser",

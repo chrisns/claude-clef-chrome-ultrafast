@@ -39,7 +39,11 @@ const EMPTY: ClefChromeMetrics = { local: 0, fallback: {}, shadow: { agree: 0, d
 
 type $ = Parameters<Parameters<Parameters<Register>[0]>[2]>[0]
 
-type Cfg = { mode: 'off' | 'shadow' | 'active'; tuning: Tuning; timeoutMs: number; url: string; model: string; embedModel: string; settleMs: number; bridge: boolean; bridgeBrowser: string; routineAt: number }
+// review: every browser action goes through Claude Code's own review (the default). bridge: a
+// routine browse runs over the browser's local Claude in Chrome bridge, with clef-flash's sort
+// as the review; anything else still goes the review way.
+type Route = 'review' | 'bridge'
+type Cfg = { mode: 'off' | 'shadow' | 'active'; tuning: Tuning; timeoutMs: number; url: string; model: string; embedModel: string; settleMs: number; route: Route; bridgeBrowser: string; routineAt: number }
 
 // Kept per module load: a hot reload closes the breaker, which is fine.
 let fails = 0
@@ -278,7 +282,6 @@ export function fastAllowed(decision: string, mode: string | undefined): boolean
 // word or injection is in the URL or a step. clef-flash judges the grounded elements before each
 // batch runs (allRoutine).
 async function bridgeable($: $, cfg: Cfg, url: string, steps: string[]): Promise<boolean> {
-  if (!cfg.bridge) return false
   const t = Date.now()
   try {
     const { decision } = await $.tool.check({ tool: `${CHROME}navigate`, input: { url } } as never)
@@ -452,7 +455,7 @@ export const register: Register = (on, options) => {
     model: String(options.model ?? 'clef-flash'),
     embedModel: String(options.embed_model ?? 'nomic-embed-text'),
     settleMs: Number(options.settle_ms ?? 0),
-    bridge: options.bridge === true,
+    route: options.route === 'bridge' ? 'bridge' : 'review',
     bridgeBrowser: String(options.bridge_browser ?? 'Comet'),
     // 0.65: in batches, risky actions scored 0.54 at most and routine ones 0.68 at least (bar one
     // at 0.37), bench/safety.ts on 49 actions: a small margin on a small set.
@@ -482,7 +485,8 @@ export const register: Register = (on, options) => {
           'Give `url` to open a page first (a tab is created when you give no tabId). ' +
           'Steps: click/open/tick <thing>, type "value" into <field>, select "option" for <field>, press enter, scroll, scroll up, wait. Put exact names and typed values in quotes. ' +
           'Give `expect`, a yes/no question about the final page (e.g. "Does the page show the Casa Flora hotel?"), to have the result checked locally. ' +
-          'It stops at the first step it is not sure about and says which; continue from there with the normal claude-in-chrome tools.',
+          'It stops at the first step it is not sure about and says which; continue from there with the normal claude-in-chrome tools. ' +
+          `route: "review" (every action reviewed by Claude Code) or "bridge" (faster for routine searching, filtering and opening pages; the user's ${cfg.bridgeBrowser} via its local bridge; risky or uncertain steps still go the review way). Default: "${cfg.route}".`,
         inputSchema: {
           type: 'object',
           properties: {
@@ -490,6 +494,7 @@ export const register: Register = (on, options) => {
             tabId: { type: 'number', description: 'The Claude-in-Chrome tab. Omit it with url to create one.' },
             steps: { type: 'array', items: { type: 'string' }, description: 'Plain steps, in order.' },
             expect: { type: 'string', description: 'A yes/no question about the final page.' },
+            route: { type: 'string', enum: ['review', 'bridge'], description: `How the actions run. Default "${cfg.route}".` },
           },
           required: ['steps'],
         },
@@ -520,6 +525,9 @@ export const register: Register = (on, options) => {
   on('prompt.compose', async ($, e, next) => {
     const out = await next(e)
     if (cfg.mode !== 'active' || !e.tools.includes(BROWSE)) return out
+    // In auto mode Claude Code's classifier refuses the browser actions the review route sends
+    // (no verdict for a plugin's call), so browse would only hand back: do not push it there.
+    if (permissionMode === 'auto' && cfg.route === 'review') return out
     return {
       sections: [
         ...out.sections,
@@ -538,13 +546,14 @@ export const register: Register = (on, options) => {
   // browse(steps): the saving is in Claude turns. One call opens the page, runs the steps and
   // checks the result, where plain Claude-in-Chrome spends a turn on each of those.
   on('tool.call', { tool: BROWSE }, async ($, e) => {
-    const input = e as unknown as { tabId?: unknown; url?: unknown; steps?: unknown; expect?: unknown }
+    const input = e as unknown as { tabId?: unknown; url?: unknown; steps?: unknown; expect?: unknown; route?: unknown }
     const steps = input.steps
     const valid =
       Array.isArray(steps) &&
       steps.every(x => typeof x === 'string') &&
       (typeof input.tabId === 'number' || typeof input.url === 'string') &&
-      (input.expect === undefined || typeof input.expect === 'string')
+      (input.expect === undefined || typeof input.expect === 'string') &&
+      (input.route === undefined || input.route === 'review' || input.route === 'bridge')
     if (!valid) {
       return { result: 'browse needs { steps: string[] } and a tabId or a url. Nothing was done; use the normal claude-in-chrome tools.' }
     }
@@ -556,7 +565,10 @@ export const register: Register = (on, options) => {
     let page: Page | undefined
     // Over the local bridge only when the whole browse reads as routine and the mode allows it;
     // a tabId from Claude's own group can only be reached with Claude's tools.
-    const bridged = allowBridge && typeof input.url === 'string' && tabId === undefined && (await bridgeable($, cfg, input.url, steps as string[]))
+    // The request's route wins over the setting.
+    const wantsBridge = ((input.route as Route | undefined) ?? cfg.route) === 'bridge'
+    const bridged = allowBridge && wantsBridge && typeof input.url === 'string' && tabId === undefined && (await bridgeable($, cfg, input.url, steps as string[]))
+    if (allowBridge && wantsBridge && !bridged) log.push('Route: review (the bridge was asked for, but its checks did not pass, or a tabId was given).')
     via = bridged ? { browser: cfg.bridgeBrowser } : undefined
     try {
     if (typeof input.url === 'string') {
